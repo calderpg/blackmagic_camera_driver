@@ -17,14 +17,18 @@ using DeckLinkIteratorHandle = BMDHandle<IDeckLinkIterator>;
 
 int DoMain()
 {
+  // Get node handles
   ros::NodeHandle nh;
   ros::NodeHandle nhp("~");
+
+  // Load parameters
   const int32_t decklink_device_index
       = nhp.param(std::string("decklink_device_index"), 0);
   const std::string camera_topic
       = nhp.param(std::string("camera_topic"), std::string("bmd_camera"));
   const std::string camera_frame
       = nhp.param(std::string("camera_frame"), std::string("bmd_camera"));
+
   // Discover DeckLink devices
   DeckLinkIteratorHandle device_iterator(CreateDeckLinkIteratorInstance());
   if (device_iterator)
@@ -43,18 +47,20 @@ int DoMain()
         break;
       }
     }
-    std::cout << "Found [" << decklink_devices.size() << "] DeckLink device(s)"
-              << std::endl;
+    ROS_INFO_NAMED(
+        ros::this_node::getName(),"Found [%zu] DeckLink device(s)",
+        decklink_devices.size());
 
     // Get the selected device
-    std::cout << "Selecting DeckLink device [" << decklink_device_index << "]"
-              << std::endl;
+    ROS_INFO_NAMED(
+        ros::this_node::getName(), "Selecting DeckLink device [%d]",
+        decklink_device_index);
     DeckLinkDevice capture_device(
         nh, camera_topic, camera_frame,
         std::move(decklink_devices.at(decklink_device_index)));
 
     // Start capture
-    std::cout << "Starting capture..." << std::endl;
+    ROS_INFO_NAMED(ros::this_node::getName(), "Starting capture...");
     capture_device.StartVideoCapture();
 
     // Spin while video callbacks run
@@ -66,15 +72,17 @@ int DoMain()
     }
 
     // Stop capture
-    std::cout << "Stopping capture..." << std::endl;
+    ROS_INFO_NAMED(ros::this_node::getName(), "Stopping capture...");
     capture_device.StopVideoCapture();
 
     // Let RAII clean everything else
-    std::cout << "...capture complete" << std::endl;
+    ROS_INFO_NAMED(ros::this_node::getName(), "...capture complete");
   }
   else
   {
-    std::cerr << "Failed to create DeckLinkIterator instance" << std::endl;
+    ROS_ERROR_NAMED(
+        ros::this_node::getName(),
+        "Failed to create DeckLinkIterator instance");
   }
   return 0;
 }

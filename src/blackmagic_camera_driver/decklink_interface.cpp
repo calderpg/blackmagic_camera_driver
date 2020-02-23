@@ -32,7 +32,9 @@ HRESULT FrameReceivedCallback::VideoInputFormatChanged(
   }
   else
   {
-    std::cout << "Null new display mode received, discarding" << std::endl;
+    ROS_WARN_NAMED(
+        ros::this_node::getName(),
+        "Null new display mode received, discarding");
     return S_OK;
   }
 }
@@ -48,16 +50,14 @@ HRESULT FrameReceivedCallback::VideoInputFrameArrived(
   }
   else if (video_frame == nullptr)
   {
-    std::cout << "Null frame received, discarding" << std::endl;
+    ROS_WARN_NAMED(
+        ros::this_node::getName(), "Null frame received, discarding");
   }
   else
   {
-    std::cout << "Invalid frame received:" << std::endl;
-    std::cout << "Frame width: " << video_frame->GetWidth() << std::endl;
-    std::cout << "Frame height: " << video_frame->GetHeight() << std::endl;
-    std::cout << "Frame bytes/row: " << video_frame->GetRowBytes() << std::endl;
-    std::cout << "Pixel format: " << video_frame->GetPixelFormat() << std::endl;
-    std::cout << "Frame flags: " << video_frame->GetFlags() << std::endl;
+    ROS_WARN_THROTTLE_NAMED(
+        10, ros::this_node::getName(), "Invalid frame received with flags: %lu",
+        video_frame->GetFlags());
   }
   return S_OK;
 }
@@ -94,11 +94,13 @@ DeckLinkDevice::DeckLinkDevice(
   {
     if (supports_input_format_detection)
     {
-      std::cout << "Input format detection is supported" << std::endl;
+      ROS_INFO_NAMED(
+          ros::this_node::getName(), "Input format detection is supported");
     }
     else
     {
-      std::cout << "Input format detection in NOT supported" << std::endl;
+      ROS_WARN_NAMED(
+          ros::this_node::getName(), "Input format detection in NOT supported");
     }
   }
   else
@@ -277,31 +279,33 @@ HRESULT DeckLinkDevice::InputFormatChangedCallback(
   // What kind of notification is it?
   if (notification_events & bmdVideoInputDisplayModeChanged)
   {
-    std::cout << "InputFormatChangedCallback -> bmdVideoInputDisplayModeChanged"
-              << std::endl;
+    ROS_INFO_NAMED(
+        ros::this_node::getName(),
+        "InputFormatChangedCallback -> bmdVideoInputDisplayModeChanged");
   }
   if (notification_events & bmdVideoInputFieldDominanceChanged)
   {
-    std::cout
-        << "InputFormatChangedCallback -> bmdVideoInputFieldDominanceChanged"
-        << std::endl;
+    ROS_INFO_NAMED(
+        ros::this_node::getName(),
+        "InputFormatChangedCallback -> bmdVideoInputFieldDominanceChanged");
   }
   if (notification_events & bmdVideoInputColorspaceChanged)
   {
-    std::cout << "InputFormatChangedCallback -> bmdVideoInputColorspaceChanged"
-              << std::endl;
+    ROS_INFO_NAMED(
+        ros::this_node::getName(), 
+        "InputFormatChangedCallback -> bmdVideoInputColorspaceChanged");
   }
 
   // What pixel format does it have?
   BMDPixelFormat pixel_format = bmdFormatUnspecified;
   if (detected_signal_flags == bmdDetectedVideoInputYCbCr422)
   {
-    std::cout << "Detected signal is YCbCr422" << std::endl;
+    ROS_INFO_NAMED(ros::this_node::getName(), "Detected signal is YCbCr422");
     pixel_format = bmdFormat10BitYUV;
   }
   else if (detected_signal_flags == bmdDetectedVideoInputRGB444)
   {
-    std::cout << "Detected signal is RGB444" << std::endl;
+    ROS_INFO_NAMED(ros::this_node::getName(), "Detected signal is RGB444");
     pixel_format = bmdFormat10BitRGB;
   }
   else if (detected_signal_flags == bmdDetectedVideoInputDualStream3D)
@@ -314,8 +318,9 @@ HRESULT DeckLinkDevice::InputFormatChangedCallback(
       const_cast<IDeckLinkDisplayMode&>(new_display_mode).GetWidth());
   const int32_t height = static_cast<int32_t>(
       const_cast<IDeckLinkDisplayMode&>(new_display_mode).GetHeight());
-  std::cout << "New display mode is " << width << " (width) " << height
-            << " (height)" << std::endl;
+  ROS_INFO_NAMED(
+      ros::this_node::getName(), "New display mode is %d (width) x %d (height)",
+      width, height);
 
   // What is the display mode (resolution + framerate)?
   const BMDDisplayMode display_mode
