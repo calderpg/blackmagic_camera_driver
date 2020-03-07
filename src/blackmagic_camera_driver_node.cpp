@@ -63,6 +63,21 @@ int DoMain()
     ROS_INFO_NAMED(ros::this_node::getName(), "Starting capture...");
     capture_device.StartVideoCapture();
 
+    // Run an instantaneous autofocus
+    const BlackmagicSDICameraControlMessage autofocus_command(
+        0xff,  // All cameras
+        0x00,  // "Change configuration"
+        {0x00, 0x01, 0x00, 0x00});  // "Lens", "Autofocus", 0, 0
+
+    // Turn on OIS (if available)
+    const BlackmagicSDICameraControlMessage enable_ois_command(
+        0xff,  // All cameras
+        0x00,  // "Change configuration"
+        {0x00, 0x06, 0x00, 0x00, 0x01});  // "Lens", "OIS", 0, 0, "enable"
+
+    capture_device.EnqueueCameraCommand(autofocus_command);
+    capture_device.EnqueueCameraCommand(enable_ois_command);
+
     // Spin while video callbacks run
     ros::Rate spin_rate(10.0);
     while (ros::ok())
@@ -70,6 +85,14 @@ int DoMain()
       ros::spinOnce();
       spin_rate.sleep();
     }
+
+    // Turn off OIS (if available)
+    const BlackmagicSDICameraControlMessage disable_ois_command(
+        0xff,  // All cameras
+        0x00,  // "Change configuration"
+        {0x00, 0x06, 0x00, 0x00, 0x00});  // "Lens", "OIS", 0, 0, "disable"
+
+    capture_device.EnqueueCameraCommand(disable_ois_command);
 
     // Stop capture
     ROS_INFO_NAMED(ros::this_node::getName(), "Stopping capture...");
@@ -94,4 +117,3 @@ int main(int argc, char** argv)
   ros::init(argc, argv, "blackmagic_camera_driver_node");
   return blackmagic_camera_driver::DoMain();
 }
-

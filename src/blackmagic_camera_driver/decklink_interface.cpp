@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstdint>
 #include <iostream>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 
@@ -18,7 +19,8 @@ namespace blackmagic_camera_driver
 const int32_t kDefaultImageWidth = 1920;
 const int32_t kDefaultImageHeight = 1080;
 const BMDDisplayMode kDefaultDisplayMode = bmdModeHD1080p30;
-const BMDPixelFormat kDefaultPixelFormat = bmdFormat8BitYUV;
+const BMDPixelFormat kDefaultInputPixelFormat = bmdFormat8BitYUV;
+const BMDPixelFormat kDefaultOutputPixelFormat = bmdFormat8BitBGRA;
 
 HRESULT FrameReceivedCallback::VideoInputFormatChanged(
     BMDVideoInputFormatChangedEvents notification_events,
@@ -59,6 +61,26 @@ HRESULT FrameReceivedCallback::VideoInputFrameArrived(
         10, ros::this_node::getName(), "Invalid frame received with flags: %lu",
         video_frame->GetFlags());
   }
+  return S_OK;
+}
+
+HRESULT FrameOutputCallback::ScheduledFrameCompleted(
+    IDeckLinkVideoFrame* completed_frame, BMDOutputFrameCompletionResult result)
+{
+  if (completed_frame != nullptr)
+  {
+    return parent_device_->ScheduledFrameCallback(*completed_frame, result);
+  }
+  else
+  {
+    ROS_WARN_NAMED(
+        ros::this_node::getName(), "Null frame completed, discarding");
+  }
+  return S_OK;
+}
+
+HRESULT FrameOutputCallback::ScheduledPlaybackHasStopped()
+{
   return S_OK;
 }
 
@@ -135,16 +157,143 @@ DeckLinkDevice::DeckLinkDevice(
     throw std::runtime_error("Failed to get output interface");
   }
 
+  // Make sure the command output format is supported
+  bool command_output_format_supported = false;
+  const auto get_command_output_format_supported_result
+      = output_device_->DoesSupportVideoMode(
+          bmdVideoConnectionUnspecified, kDefaultDisplayMode,
+          kDefaultOutputPixelFormat, bmdSupportedVideoModeDefault, nullptr,
+          &command_output_format_supported);
+  if (get_command_output_format_supported_result == S_OK)
+  {
+    if (!command_output_format_supported)
+    {
+      throw std::runtime_error("Command output format not supported");
+    }
+  }
+  else
+  {
+    throw std::runtime_error(
+        "Failed to check if command output format is supported");
+  }
+
+  // Get output display format information
+  IDeckLinkDisplayMode* output_display_mode_ptr = nullptr;
+  const auto get_display_mode_result = output_device_->GetDisplayMode(
+      kDefaultDisplayMode, &output_display_mode_ptr);
+  if (get_display_mode_result != S_OK)
+  {
+    throw std::runtime_error("Failed to get output display mode");
+  }
+  DeckLinkDisplayModeHandle output_display_mode(output_display_mode_ptr);
+
+  const auto get_framerate_result = output_display_mode->GetFrameRate(
+      &output_frame_duration_, &output_frame_timescale_);
+  if (get_framerate_result == S_OK)
+  {
+    ROS_INFO_NAMED(
+        ros::this_node::getName(),
+        "Output framerate: %ld (frame duration) %ld (timescale)",
+        output_frame_duration_, output_frame_timescale_);
+  }
+  else
+  {
+    throw std::runtime_error("Failed to get output framerate");
+  }
+
+  // Create a frame for output
+  IDeckLinkMutableVideoFrame* blue_reference_output_frame_ptr = nullptr;
+  const auto create_reference_frame_result = output_device_->CreateVideoFrame(
+      static_cast<int32_t>(output_display_mode->GetWidth()),
+      static_cast<int32_t>(output_display_mode->GetHeight()),
+      static_cast<int32_t>(output_display_mode->GetWidth() * 4),
+      bmdFormat8BitBGRA, bmdFrameFlagDefault, &blue_reference_output_frame_ptr);
+  if (create_reference_frame_result == S_OK
+      && blue_reference_output_frame_ptr != nullptr)
+  {
+    blue_reference_output_frame_
+        = DeckLinkMutableVideoFrameHandle(blue_reference_output_frame_ptr);
+  }
+  else
+  {
+    throw std::runtime_error(
+        "Failed to create video frame for reference output");
+  }
+
+  // Create a frame for output commands
+  IDeckLinkMutableVideoFrame* blue_command_output_frame_ptr = nullptr;
+  const auto create_command_frame_result = output_device_->CreateVideoFrame(
+      static_cast<int32_t>(output_display_mode->GetWidth()),
+      static_cast<int32_t>(output_display_mode->GetHeight()),
+      static_cast<int32_t>(output_display_mode->GetWidth() * 4),
+      bmdFormat8BitBGRA, bmdFrameFlagDefault, &blue_command_output_frame_ptr);
+  if (create_command_frame_result == S_OK
+      && blue_command_output_frame_ptr != nullptr)
+  {
+    blue_command_output_frame_
+        = DeckLinkMutableVideoFrameHandle(blue_command_output_frame_ptr);
+  }
+  else
+  {
+    throw std::runtime_error(
+        "Failed to create video frame for command output");
+  }
+
+  // Fill the output frame with blue pixels
+  const uint32_t blue_pixel = 0xff0000ffu;
+  const std::vector<uint32_t> blue_fill(
+      (output_display_mode->GetWidth() * output_display_mode->GetHeight()),
+      blue_pixel);
+
+  uint8_t* reference_frame_buffer = nullptr;
+  const auto get_reference_bytes_result
+      = blue_reference_output_frame_->GetBytes(
+          reinterpret_cast<void**>(&reference_frame_buffer));
+  if (get_reference_bytes_result == S_OK && reference_frame_buffer != nullptr)
+  {
+    std::memcpy(reference_frame_buffer, blue_fill.data(), blue_fill.size() * 4);
+  }
+  else
+  {
+    throw std::runtime_error("Failed to get blue reference output frame bytes");
+  }
+
+  uint8_t* command_frame_buffer = nullptr;
+  const auto get_command_bytes_result
+      = blue_command_output_frame_->GetBytes(
+          reinterpret_cast<void**>(&command_frame_buffer));
+  if (get_command_bytes_result == S_OK && command_frame_buffer != nullptr)
+  {
+    std::memcpy(command_frame_buffer, blue_fill.data(), blue_fill.size() * 4);
+  }
+  else
+  {
+    throw std::runtime_error("Failed to get blue command output frame bytes");
+  }
+
   // Create the input callback
   input_callback_
       = DeckLinkInputCallbackHandle(new FrameReceivedCallback(this));
 
   // Bind the callback
-  const auto set_callback_result
+  const auto set_input_callback_result
       = input_device_->SetCallback(input_callback_.get());
-  if (set_callback_result != S_OK)
+  if (set_input_callback_result != S_OK)
   {
     throw std::runtime_error("Failed to set input callback");
+  }
+
+  // Create the output callback
+  output_callback_
+      = DeckLinkOutputCallbackHandle(new FrameOutputCallback(this));
+
+  // Bind the output callback
+  const auto set_output_callback_result
+      = output_device_->SetScheduledFrameCompletionCallback(
+          output_callback_.get());
+  if (set_output_callback_result != S_OK)
+  {
+    throw std::runtime_error("Failed to set output callback");
   }
 
   // Make the video converter
@@ -163,14 +312,34 @@ DeckLinkDevice::DeckLinkDevice(
 
 void DeckLinkDevice::StartVideoCapture()
 {
-  EnableVideoInput(kDefaultDisplayMode, kDefaultPixelFormat);
+  EnableVideoInput(kDefaultDisplayMode, kDefaultInputPixelFormat);
+  EnableVideoOutput(kDefaultDisplayMode);
+  // Blackmagic's example all schedule 3 frames before starting scheduled
+  // playback.
+  for (int32_t i = 0; i < 3; i++)
+  {
+    if (ScheduleNextFrame(*blue_reference_output_frame_) != S_OK)
+    {
+      throw std::runtime_error("Failed to schedule starting output frame");
+    }
+  }
   StartStreams();
+  StartScheduledPlayback();
 }
 
 void DeckLinkDevice::StopVideoCapture()
 {
   StopStreams();
+  StopScheduledPlayback();
   DisableVideoInput();
+  DisableVideoOutput();
+}
+
+void DeckLinkDevice::EnqueueCameraCommand(
+    const BlackmagicSDICameraControlMessage& command)
+{
+  std::lock_guard<std::mutex> lock(camera_command_queue_lock_);
+  camera_command_queue_.push_back(command);
 }
 
 void DeckLinkDevice::RestartCapture(
@@ -192,12 +361,31 @@ void DeckLinkDevice::EnableVideoInput(
   }
 }
 
+void DeckLinkDevice::EnableVideoOutput(const BMDDisplayMode display_mode)
+{
+  const auto result
+      = output_device_->EnableVideoOutput(display_mode, bmdVideoOutputVANC);
+  if (result != S_OK)
+  {
+    throw std::runtime_error("Failed to enable video output");
+  }
+}
+
 void DeckLinkDevice::DisableVideoInput()
 {
   const auto result = input_device_->DisableVideoInput();
   if (result != S_OK)
   {
     throw std::runtime_error("Failed to disable video input");
+  }
+}
+
+void DeckLinkDevice::DisableVideoOutput()
+{
+  const auto result = output_device_->DisableVideoOutput();
+  if (result != S_OK)
+  {
+    throw std::runtime_error("Failed to disable video output");
   }
 }
 
@@ -237,6 +425,25 @@ void DeckLinkDevice::StopStreams()
   }
 }
 
+void DeckLinkDevice::StartScheduledPlayback()
+{
+  const auto result =
+      output_device_->StartScheduledPlayback(0, output_frame_timescale_, 1.0);
+  if (result != S_OK)
+  {
+    throw std::runtime_error("Failed to start scheduled playback");
+  }
+}
+
+void DeckLinkDevice::StopScheduledPlayback()
+{
+  const auto result = output_device_->StopScheduledPlayback(0, nullptr, 0);
+  if (result != S_OK)
+  {
+    throw std::runtime_error("Failed to stop scheduled playback");
+  }
+}
+
 void DeckLinkDevice::SetupConversionAndPublishingFrames(
     const int32_t image_width, const int32_t image_height)
 {
@@ -247,7 +454,7 @@ void DeckLinkDevice::SetupConversionAndPublishingFrames(
   IDeckLinkMutableVideoFrame* conversion_video_frame_ptr = nullptr;
   const auto create_video_frame_result = output_device_->CreateVideoFrame(
       image_width, image_height, image_step, bmdFormat8BitBGRA,
-      bmdVideoInputFlagDefault, &conversion_video_frame_ptr);
+      bmdFrameFlagDefault, &conversion_video_frame_ptr);
   if (create_video_frame_result == S_OK
       && conversion_video_frame_ptr != nullptr)
   {
@@ -292,7 +499,7 @@ HRESULT DeckLinkDevice::InputFormatChangedCallback(
   if (notification_events & bmdVideoInputColorspaceChanged)
   {
     ROS_INFO_NAMED(
-        ros::this_node::getName(), 
+        ros::this_node::getName(),
         "InputFormatChangedCallback -> bmdVideoInputColorspaceChanged");
   }
 
@@ -334,6 +541,18 @@ HRESULT DeckLinkDevice::InputFormatChangedCallback(
   return S_OK;
 }
 
+HRESULT DeckLinkDevice::ScheduleNextFrame(IDeckLinkVideoFrame& video_frame)
+{
+  const auto scheduled_result = output_device_->ScheduleVideoFrame(
+      &video_frame, output_frame_counter_ * output_frame_duration_,
+      output_frame_duration_, output_frame_timescale_);
+  if (scheduled_result)
+  {
+    output_frame_counter_++;
+  }
+  return scheduled_result;
+}
+
 HRESULT DeckLinkDevice::FrameCallback(
     const IDeckLinkVideoInputFrame& video_frame,
     const IDeckLinkAudioInputPacket& audio_packet)
@@ -364,5 +583,88 @@ HRESULT DeckLinkDevice::FrameCallback(
   }
   return S_OK;
 }
-}  // namespace blackmagic_camera_driver
 
+HRESULT DeckLinkDevice::ScheduledFrameCallback(
+    IDeckLinkVideoFrame& completed_frame,
+    const BMDOutputFrameCompletionResult result)
+{
+  (void)(completed_frame);
+  (void)(result);
+  IDeckLinkMutableVideoFrame* next_frame = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(camera_command_queue_lock_);
+    if (camera_command_queue_.size() > 0)
+    {
+      next_frame = blue_command_output_frame_.get();
+
+      // Pack as many camera commands as fit into the ancillary packet
+      BlackmagicSDICameraControlPacketHandle control_packet(
+          new BlackmagicSDICameraControlPacket());
+      bool packet_space_remaining = true;
+      while ((camera_command_queue_.size() > 0) && packet_space_remaining)
+      {
+        if (control_packet->AddCameraControlMessage(
+                camera_command_queue_.front()))
+        {
+          camera_command_queue_.pop_front();
+        }
+        else
+        {
+          packet_space_remaining = false;
+        }
+      }
+
+      // Get ancillary packets
+      IDeckLinkVideoFrameAncillaryPackets* ancillary_packets_ptr = nullptr;
+      const auto get_ancillary_packets_result = next_frame->QueryInterface(
+          IID_IDeckLinkVideoFrameAncillaryPackets,
+          reinterpret_cast<void**>(&ancillary_packets_ptr));
+      DeckLinkVideoFrameAncillaryPacketsHandle ancillary_packets;
+      if (get_ancillary_packets_result == S_OK
+          && ancillary_packets_ptr != nullptr)
+      {
+        ancillary_packets
+            = DeckLinkVideoFrameAncillaryPacketsHandle(ancillary_packets_ptr);
+      }
+      else
+      {
+        throw std::runtime_error("Failed to retrieve ancillary packets");
+      }
+
+      // Get rid of any existing packets
+      const auto detach_packets_result = ancillary_packets->DetachAllPackets();
+      if (detach_packets_result != S_OK)
+      {
+        throw std::runtime_error("Failed to detach existing packets");
+      }
+
+      // Add ancillary packet to the frame
+      const auto add_packet_result
+          = ancillary_packets->AttachPacket(control_packet.get());
+      if (add_packet_result != S_OK)
+      {
+        throw std::runtime_error("Failed to attach control packet");
+      }
+      // Not sure why this is necessary - Blackmagic's examples suggest that
+      // AttachPacket doesn't bump refcount, so we don't want the unique_ptr
+      // destructor to get rid of the control packet.
+      else
+      {
+        control_packet.release();
+      }
+    }
+    else
+    {
+      next_frame = blue_reference_output_frame_.get();
+    }
+  }
+  if (next_frame != nullptr)
+  {
+    return ScheduleNextFrame(*next_frame);
+  }
+  else
+  {
+    throw std::runtime_error("Failed to select valid next frame");
+  }
+}
+}  // namespace blackmagic_camera_driver
