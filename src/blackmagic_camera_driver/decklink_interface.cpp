@@ -20,7 +20,11 @@ const int32_t kDefaultImageWidth = 1920;
 const int32_t kDefaultImageHeight = 1080;
 const BMDDisplayMode kDefaultDisplayMode = bmdModeHD1080p30;
 const BMDPixelFormat kDefaultInputPixelFormat = bmdFormat8BitYUV;
-const BMDPixelFormat kDefaultOutputPixelFormat = bmdFormat8BitBGRA;
+// Undocumented, but it looks like output must be v210 YUV for VANC data to be
+// encoded into frames properly.
+const BMDPixelFormat kOutputPixelFormat = bmdFormat10BitYUV;
+// TODO(calderpg) Compute this number from frame width instead.
+const int32_t kOutputFrameRowSize = 5120;
 
 HRESULT FrameReceivedCallback::VideoInputFormatChanged(
     BMDVideoInputFormatChangedEvents notification_events,
@@ -162,7 +166,7 @@ DeckLinkDevice::DeckLinkDevice(
   const auto get_command_output_format_supported_result
       = output_device_->DoesSupportVideoMode(
           bmdVideoConnectionUnspecified, kDefaultDisplayMode,
-          kDefaultOutputPixelFormat, bmdSupportedVideoModeDefault, nullptr,
+          kOutputPixelFormat, bmdSupportedVideoModeDefault, nullptr,
           &command_output_format_supported);
   if (get_command_output_format_supported_result == S_OK)
   {
@@ -201,18 +205,18 @@ DeckLinkDevice::DeckLinkDevice(
     throw std::runtime_error("Failed to get output framerate");
   }
 
-  // Create a frame for output
-  IDeckLinkMutableVideoFrame* blue_reference_output_frame_ptr = nullptr;
+  // Create a frame for reference output
+  IDeckLinkMutableVideoFrame* reference_output_frame_ptr = nullptr;
   const auto create_reference_frame_result = output_device_->CreateVideoFrame(
       static_cast<int32_t>(output_display_mode->GetWidth()),
       static_cast<int32_t>(output_display_mode->GetHeight()),
-      static_cast<int32_t>(output_display_mode->GetWidth() * 4),
-      bmdFormat8BitBGRA, bmdFrameFlagDefault, &blue_reference_output_frame_ptr);
+      kOutputFrameRowSize, kOutputPixelFormat, bmdFrameFlagDefault,
+      &reference_output_frame_ptr);
   if (create_reference_frame_result == S_OK
-      && blue_reference_output_frame_ptr != nullptr)
+      && reference_output_frame_ptr != nullptr)
   {
-    blue_reference_output_frame_
-        = DeckLinkMutableVideoFrameHandle(blue_reference_output_frame_ptr);
+    reference_output_frame_
+        = DeckLinkMutableVideoFrameHandle(reference_output_frame_ptr);
   }
   else
   {
@@ -221,17 +225,17 @@ DeckLinkDevice::DeckLinkDevice(
   }
 
   // Create a frame for output commands
-  IDeckLinkMutableVideoFrame* red_command_output_frame_ptr = nullptr;
+  IDeckLinkMutableVideoFrame* command_output_frame_ptr = nullptr;
   const auto create_command_frame_result = output_device_->CreateVideoFrame(
       static_cast<int32_t>(output_display_mode->GetWidth()),
       static_cast<int32_t>(output_display_mode->GetHeight()),
-      static_cast<int32_t>(output_display_mode->GetWidth() * 4),
-      bmdFormat8BitBGRA, bmdFrameFlagDefault, &red_command_output_frame_ptr);
+      kOutputFrameRowSize, kOutputPixelFormat, bmdFrameFlagDefault,
+      &command_output_frame_ptr);
   if (create_command_frame_result == S_OK
-      && red_command_output_frame_ptr != nullptr)
+      && command_output_frame_ptr != nullptr)
   {
-    red_command_output_frame_
-        = DeckLinkMutableVideoFrameHandle(red_command_output_frame_ptr);
+    command_output_frame_
+        = DeckLinkMutableVideoFrameHandle(command_output_frame_ptr);
   }
   else
   {
@@ -239,42 +243,54 @@ DeckLinkDevice::DeckLinkDevice(
         "Failed to create video frame for command output");
   }
 
-  // Fill the output frame with blue pixels
-  const uint32_t blue_pixel = 0xff0000ffu;
-  const std::vector<uint32_t> blue_fill(
-      (output_display_mode->GetWidth() * output_display_mode->GetHeight()),
-      blue_pixel);
-
-  uint8_t* reference_frame_buffer = nullptr;
+  // Fill the output frame with cyan pixels
+  uint32_t* reference_frame_buffer = nullptr;
   const auto get_reference_bytes_result
-      = blue_reference_output_frame_->GetBytes(
+      = reference_output_frame_->GetBytes(
           reinterpret_cast<void**>(&reference_frame_buffer));
   if (get_reference_bytes_result == S_OK && reference_frame_buffer != nullptr)
   {
-    std::memcpy(reference_frame_buffer, blue_fill.data(), blue_fill.size() * 4);
+    const std::vector<uint32_t> cyan_yuv_pixels
+        = { 0x040aa298, 0x2a8a62a8, 0x298aa040, 0x2a8102a8};
+    const size_t num_words
+        = (kOutputFrameRowSize * output_display_mode->GetHeight())
+            / sizeof(uint32_t);
+    for (size_t word = 0; word < num_words; word += 4)
+    {
+      reference_frame_buffer[word + 0] = cyan_yuv_pixels.at(0);
+      reference_frame_buffer[word + 1] = cyan_yuv_pixels.at(1);
+      reference_frame_buffer[word + 2] = cyan_yuv_pixels.at(2);
+      reference_frame_buffer[word + 3] = cyan_yuv_pixels.at(3);
+    }
   }
   else
   {
-    throw std::runtime_error("Failed to get blue reference output frame bytes");
+    throw std::runtime_error("Failed to get reference output frame bytes");
   }
 
-  // Fill the command frame with red pixels
-  const uint32_t red_pixel = 0xffff0000u;
-  const std::vector<uint32_t> red_fill(
-      (output_display_mode->GetWidth() * output_display_mode->GetHeight()),
-      red_pixel);
-
-  uint8_t* command_frame_buffer = nullptr;
+  // Fill the command frame with cyan pixels
+  uint32_t* command_frame_buffer = nullptr;
   const auto get_command_bytes_result
-      = red_command_output_frame_->GetBytes(
+      = command_output_frame_->GetBytes(
           reinterpret_cast<void**>(&command_frame_buffer));
   if (get_command_bytes_result == S_OK && command_frame_buffer != nullptr)
   {
-    std::memcpy(command_frame_buffer, red_fill.data(), red_fill.size() * 4);
+    const std::vector<uint32_t> cyan_yuv_pixels
+        = { 0x040aa298, 0x2a8a62a8, 0x298aa040, 0x2a8102a8};
+    const size_t num_words
+        = (kOutputFrameRowSize * output_display_mode->GetHeight())
+            / sizeof(uint32_t);
+    for (size_t word = 0; word < num_words; word += 4)
+    {
+      command_frame_buffer[word + 0] = cyan_yuv_pixels.at(0);
+      command_frame_buffer[word + 1] = cyan_yuv_pixels.at(1);
+      command_frame_buffer[word + 2] = cyan_yuv_pixels.at(2);
+      command_frame_buffer[word + 3] = cyan_yuv_pixels.at(3);
+    }
   }
   else
   {
-    throw std::runtime_error("Failed to get red command output frame bytes");
+    throw std::runtime_error("Failed to get command output frame bytes");
   }
 
   // Create the input callback
@@ -324,7 +340,7 @@ void DeckLinkDevice::StartVideoCapture()
   // playback.
   for (int32_t i = 0; i < 3; i++)
   {
-    if (ScheduleNextFrame(*blue_reference_output_frame_) != S_OK)
+    if (ScheduleNextFrame(*reference_output_frame_) != S_OK)
     {
       throw std::runtime_error("Failed to schedule starting output frame");
     }
@@ -549,6 +565,8 @@ HRESULT DeckLinkDevice::InputFormatChangedCallback(
 
 HRESULT DeckLinkDevice::ScheduleNextFrame(IDeckLinkVideoFrame& video_frame)
 {
+  LogVideoFrameAncillaryPackets(video_frame, "ScheduleNextFrame");
+
   const auto scheduled_result = output_device_->ScheduleVideoFrame(
       &video_frame, output_frame_counter_ * output_frame_duration_,
       output_frame_duration_, output_frame_timescale_);
@@ -563,6 +581,77 @@ HRESULT DeckLinkDevice::ScheduleNextFrame(IDeckLinkVideoFrame& video_frame)
         "Failed to schedule video frame: %d", scheduled_result);
   }
   return scheduled_result;
+}
+
+void DeckLinkDevice::LogVideoFrameAncillaryPackets(
+    const IDeckLinkVideoFrame& video_frame, const std::string& msg)
+{
+  // Get ancillary packets
+  IDeckLinkVideoFrameAncillaryPackets* ancillary_packets_ptr = nullptr;
+  const auto get_ancillary_packets_result
+      = const_cast<IDeckLinkVideoFrame*>(&video_frame)->QueryInterface(
+          IID_IDeckLinkVideoFrameAncillaryPackets,
+          reinterpret_cast<void**>(&ancillary_packets_ptr));
+  DeckLinkVideoFrameAncillaryPacketsHandle ancillary_packets;
+  if (get_ancillary_packets_result == S_OK
+      && ancillary_packets_ptr != nullptr)
+  {
+    ancillary_packets
+        = DeckLinkVideoFrameAncillaryPacketsHandle(ancillary_packets_ptr);
+  }
+  else
+  {
+    throw std::runtime_error("Failed to retrieve ancillary packets");
+  }
+
+  // Get the packet iterator
+  IDeckLinkAncillaryPacketIterator* ancillary_packet_iterator_ptr = nullptr;
+  const auto get_ancillary_packet_iterator_result
+      = ancillary_packets->GetPacketIterator(&ancillary_packet_iterator_ptr);
+  DeckLinkAncillaryPacketIteratorHandle ancillary_packet_iterator;
+  if (get_ancillary_packet_iterator_result == S_OK
+      && ancillary_packet_iterator_ptr != nullptr)
+  {
+    ancillary_packet_iterator = DeckLinkAncillaryPacketIteratorHandle(
+        ancillary_packet_iterator_ptr);
+  }
+  else
+  {
+    throw std::runtime_error("Failed to retrieve ancillary packet iterator");
+  }
+
+  // Go through the packets
+  std::vector<DeckLinkAncillaryPacketHandle> received_packets;
+
+  while (true)
+  {
+    IDeckLinkAncillaryPacket* ancillary_packet_ptr = nullptr;
+    if (ancillary_packet_iterator->Next(&ancillary_packet_ptr) == S_OK)
+    {
+      received_packets.emplace_back(ancillary_packet_ptr);
+    }
+    else
+    {
+      break;
+    }
+  }
+
+  if (received_packets.size() > 0)
+  {
+    ROS_INFO_NAMED(
+        ros::this_node::getName(),
+        "[%s] Video frame contains %zu SDI ancillary packets", msg.c_str(),
+        received_packets.size());
+
+    for (size_t idx = 0; idx < received_packets.size(); idx++)
+    {
+      ROS_INFO_NAMED(
+          ros::this_node::getName(),
+          "[%s] Ancillary packet [%zu] has DID %u and SDID %u", msg.c_str(),
+          idx, static_cast<uint32_t>(received_packets.at(idx)->GetDID()),
+          static_cast<uint32_t>(received_packets.at(idx)->GetSDID()));
+    }
+  }
 }
 
 HRESULT DeckLinkDevice::FrameCallback(
@@ -589,57 +678,7 @@ HRESULT DeckLinkDevice::FrameCallback(
       throw std::runtime_error("Failed to get frame bytes");
     }
 
-    // Get ancillary packets
-    IDeckLinkVideoFrameAncillaryPackets* ancillary_packets_ptr = nullptr;
-    const auto get_ancillary_packets_result
-        = const_cast<IDeckLinkVideoInputFrame*>(&video_frame)->QueryInterface(
-            IID_IDeckLinkVideoFrameAncillaryPackets,
-            reinterpret_cast<void**>(&ancillary_packets_ptr));
-    DeckLinkVideoFrameAncillaryPacketsHandle ancillary_packets;
-    if (get_ancillary_packets_result == S_OK
-        && ancillary_packets_ptr != nullptr)
-    {
-      ancillary_packets
-          = DeckLinkVideoFrameAncillaryPacketsHandle(ancillary_packets_ptr);
-    }
-    else
-    {
-      throw std::runtime_error("Failed to retrieve ancillary packets");
-    }
-
-    // Get the packet iterator
-    IDeckLinkAncillaryPacketIterator* ancillary_packet_iterator_ptr = nullptr;
-    const auto get_ancillary_packet_iterator_result
-        = ancillary_packets->GetPacketIterator(&ancillary_packet_iterator_ptr);
-    DeckLinkAncillaryPacketIteratorHandle ancillary_packet_iterator;
-    if (get_ancillary_packet_iterator_result == S_OK
-        && ancillary_packet_iterator_ptr != nullptr)
-    {
-      ancillary_packet_iterator = DeckLinkAncillaryPacketIteratorHandle(
-          ancillary_packet_iterator_ptr);
-    }
-    else
-    {
-      throw std::runtime_error("Failed to retrieve ancillary packet iterator");
-    }
-
-    // Go through the packets
-    std::vector<DeckLinkAncillaryPacketHandle> received_packets;
-
-    IDeckLinkAncillaryPacket* ancillary_packet_ptr = nullptr;
-    while (ancillary_packet_iterator->Next(&ancillary_packet_ptr) == S_OK)
-    {
-      received_packets.emplace_back(ancillary_packet_ptr);
-    }
-
-    for (size_t idx = 0; idx < received_packets.size(); idx++)
-    {
-      std::cout << "Received ancillary packet [" << idx << "] with DID"
-                << static_cast<uint32_t>(received_packets.at(idx)->GetDID())
-                << " and SDID "
-                << static_cast<uint32_t>(received_packets.at(idx)->GetSDID())
-                << std::endl;
-    }
+    LogVideoFrameAncillaryPackets(video_frame, "FrameCallback");
   }
   else
   {
@@ -697,7 +736,7 @@ HRESULT DeckLinkDevice::ScheduledFrameCallback(
     // Get ancillary packets
     IDeckLinkVideoFrameAncillaryPackets* ancillary_packets_ptr = nullptr;
     const auto get_ancillary_packets_result
-        = red_command_output_frame_->QueryInterface(
+        = command_output_frame_->QueryInterface(
             IID_IDeckLinkVideoFrameAncillaryPackets,
             reinterpret_cast<void**>(&ancillary_packets_ptr));
     DeckLinkVideoFrameAncillaryPacketsHandle ancillary_packets;
@@ -733,11 +772,11 @@ HRESULT DeckLinkDevice::ScheduledFrameCallback(
     {
       control_packet.release();
     }
-    return ScheduleNextFrame(*red_command_output_frame_);
+    return ScheduleNextFrame(*command_output_frame_);
   }
   else
   {
-    return ScheduleNextFrame(*blue_reference_output_frame_);
+    return ScheduleNextFrame(*reference_output_frame_);
   }
 }
 }  // namespace blackmagic_camera_driver

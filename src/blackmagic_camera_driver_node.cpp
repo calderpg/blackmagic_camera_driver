@@ -78,24 +78,24 @@ int DoMain()
     capture_device.StartVideoCapture();
 
     // Wait for inputs to stabilize before sending commands
-    std::this_thread::sleep_for(std::chrono::seconds(10));
+    std::this_thread::sleep_for(std::chrono::seconds(1));
 
-    const uint16_t mid_focus = ConvertToFixed16(0.5);
-    ROS_INFO("mid focus command %hx", mid_focus);
-    const uint8_t mid_focus_bottom_byte
-        = static_cast<uint8_t>(mid_focus & 0x00ff);
-    const uint8_t mid_focus_top_byte
-        = static_cast<uint8_t>((mid_focus & 0xff00) >> 8);
+    const uint16_t set_focus = ConvertToFixed16(0.5);
+    ROS_INFO("mid focus command %hx", set_focus);
+    const uint8_t set_focus_bottom_byte
+        = static_cast<uint8_t>(set_focus & 0x00ff);
+    const uint8_t set_focus_top_byte
+        = static_cast<uint8_t>((set_focus & 0xff00) >> 8);
     // Focus to the near limit
-    const BlackmagicSDICameraControlMessage mid_focus_command(
+    const BlackmagicSDICameraControlMessage set_focus_command(
         camera_id,  // Destination camera
         0x00,  // "Change configuration"
         {0x00,  // "Lens"
          0x00,  // "Focus"
          0x00, 0x00,  // Empty
-         mid_focus_bottom_byte, mid_focus_top_byte});  // Mid focus
+         set_focus_bottom_byte, set_focus_top_byte});  // Mid focus
 
-    capture_device.EnqueueCameraCommand(mid_focus_command);
+    capture_device.EnqueueCameraCommand(set_focus_command);
 
     // // Run an instantaneous autofocus
     // const BlackmagicSDICameraControlMessage autofocus_command(
@@ -114,10 +114,10 @@ int DoMain()
     // capture_device.EnqueueCameraCommand(enable_ois_command);
 
     // Spin while video callbacks run
-    ros::Rate spin_rate(1.0);
+    ros::Rate spin_rate(30.0);
     while (ros::ok())
     {
-      capture_device.EnqueueCameraCommand(mid_focus_command);
+      // capture_device.EnqueueCameraCommand(set_focus_command);
       ros::spinOnce();
       spin_rate.sleep();
     }

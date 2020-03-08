@@ -320,6 +320,9 @@ private:
       IDeckLinkVideoFrame& completed_frame,
       const BMDOutputFrameCompletionResult result);
 
+  void LogVideoFrameAncillaryPackets(
+      const IDeckLinkVideoFrame& video_frame, const std::string& msg);
+
   ros::NodeHandle nh_;
   image_transport::ImageTransport it_;
   image_transport::Publisher camera_pub_;
@@ -341,7 +344,7 @@ private:
   DeckLinkInputCallbackHandle input_callback_;
   DeckLinkOutputCallbackHandle output_callback_;
   DeckLinkMutableVideoFrameHandle conversion_frame_;
-  DeckLinkMutableVideoFrameHandle blue_reference_output_frame_;
-  DeckLinkMutableVideoFrameHandle red_command_output_frame_;
+  DeckLinkMutableVideoFrameHandle reference_output_frame_;
+  DeckLinkMutableVideoFrameHandle command_output_frame_;
 };
 }  // namespace blackmagic_camera_driver
