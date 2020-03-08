@@ -221,17 +221,17 @@ DeckLinkDevice::DeckLinkDevice(
   }
 
   // Create a frame for output commands
-  IDeckLinkMutableVideoFrame* blue_command_output_frame_ptr = nullptr;
+  IDeckLinkMutableVideoFrame* red_command_output_frame_ptr = nullptr;
   const auto create_command_frame_result = output_device_->CreateVideoFrame(
       static_cast<int32_t>(output_display_mode->GetWidth()),
       static_cast<int32_t>(output_display_mode->GetHeight()),
       static_cast<int32_t>(output_display_mode->GetWidth() * 4),
-      bmdFormat8BitBGRA, bmdFrameFlagDefault, &blue_command_output_frame_ptr);
+      bmdFormat8BitBGRA, bmdFrameFlagDefault, &red_command_output_frame_ptr);
   if (create_command_frame_result == S_OK
-      && blue_command_output_frame_ptr != nullptr)
+      && red_command_output_frame_ptr != nullptr)
   {
-    blue_command_output_frame_
-        = DeckLinkMutableVideoFrameHandle(blue_command_output_frame_ptr);
+    red_command_output_frame_
+        = DeckLinkMutableVideoFrameHandle(red_command_output_frame_ptr);
   }
   else
   {
@@ -258,17 +258,23 @@ DeckLinkDevice::DeckLinkDevice(
     throw std::runtime_error("Failed to get blue reference output frame bytes");
   }
 
+  // Fill the command frame with red pixels
+  const uint32_t red_pixel = 0xffff0000u;
+  const std::vector<uint32_t> red_fill(
+      (output_display_mode->GetWidth() * output_display_mode->GetHeight()),
+      red_pixel);
+
   uint8_t* command_frame_buffer = nullptr;
   const auto get_command_bytes_result
-      = blue_command_output_frame_->GetBytes(
+      = red_command_output_frame_->GetBytes(
           reinterpret_cast<void**>(&command_frame_buffer));
   if (get_command_bytes_result == S_OK && command_frame_buffer != nullptr)
   {
-    std::memcpy(command_frame_buffer, blue_fill.data(), blue_fill.size() * 4);
+    std::memcpy(command_frame_buffer, red_fill.data(), red_fill.size() * 4);
   }
   else
   {
-    throw std::runtime_error("Failed to get blue command output frame bytes");
+    throw std::runtime_error("Failed to get red command output frame bytes");
   }
 
   // Create the input callback
@@ -314,7 +320,7 @@ void DeckLinkDevice::StartVideoCapture()
 {
   EnableVideoInput(kDefaultDisplayMode, kDefaultInputPixelFormat);
   EnableVideoOutput(kDefaultDisplayMode);
-  // Blackmagic's example all schedule 3 frames before starting scheduled
+  // Blackmagic's examples all schedule 3 frames before starting scheduled
   // playback.
   for (int32_t i = 0; i < 3; i++)
   {
@@ -546,9 +552,15 @@ HRESULT DeckLinkDevice::ScheduleNextFrame(IDeckLinkVideoFrame& video_frame)
   const auto scheduled_result = output_device_->ScheduleVideoFrame(
       &video_frame, output_frame_counter_ * output_frame_duration_,
       output_frame_duration_, output_frame_timescale_);
-  if (scheduled_result)
+  if (scheduled_result == S_OK)
   {
     output_frame_counter_++;
+  }
+  else
+  {
+    ROS_ERROR_NAMED(
+        ros::this_node::getName(),
+        "Failed to schedule video frame: %d", scheduled_result);
   }
   return scheduled_result;
 }
@@ -576,6 +588,58 @@ HRESULT DeckLinkDevice::FrameCallback(
     {
       throw std::runtime_error("Failed to get frame bytes");
     }
+
+    // Get ancillary packets
+    IDeckLinkVideoFrameAncillaryPackets* ancillary_packets_ptr = nullptr;
+    const auto get_ancillary_packets_result
+        = const_cast<IDeckLinkVideoInputFrame*>(&video_frame)->QueryInterface(
+            IID_IDeckLinkVideoFrameAncillaryPackets,
+            reinterpret_cast<void**>(&ancillary_packets_ptr));
+    DeckLinkVideoFrameAncillaryPacketsHandle ancillary_packets;
+    if (get_ancillary_packets_result == S_OK
+        && ancillary_packets_ptr != nullptr)
+    {
+      ancillary_packets
+          = DeckLinkVideoFrameAncillaryPacketsHandle(ancillary_packets_ptr);
+    }
+    else
+    {
+      throw std::runtime_error("Failed to retrieve ancillary packets");
+    }
+
+    // Get the packet iterator
+    IDeckLinkAncillaryPacketIterator* ancillary_packet_iterator_ptr = nullptr;
+    const auto get_ancillary_packet_iterator_result
+        = ancillary_packets->GetPacketIterator(&ancillary_packet_iterator_ptr);
+    DeckLinkAncillaryPacketIteratorHandle ancillary_packet_iterator;
+    if (get_ancillary_packet_iterator_result == S_OK
+        && ancillary_packet_iterator_ptr != nullptr)
+    {
+      ancillary_packet_iterator = DeckLinkAncillaryPacketIteratorHandle(
+          ancillary_packet_iterator_ptr);
+    }
+    else
+    {
+      throw std::runtime_error("Failed to retrieve ancillary packet iterator");
+    }
+
+    // Go through the packets
+    std::vector<DeckLinkAncillaryPacketHandle> received_packets;
+
+    IDeckLinkAncillaryPacket* ancillary_packet_ptr = nullptr;
+    while (ancillary_packet_iterator->Next(&ancillary_packet_ptr) == S_OK)
+    {
+      received_packets.emplace_back(ancillary_packet_ptr);
+    }
+
+    for (size_t idx = 0; idx < received_packets.size(); idx++)
+    {
+      std::cout << "Received ancillary packet [" << idx << "] with DID"
+                << static_cast<uint32_t>(received_packets.at(idx)->GetDID())
+                << " and SDID "
+                << static_cast<uint32_t>(received_packets.at(idx)->GetSDID())
+                << std::endl;
+    }
   }
   else
   {
@@ -590,16 +654,23 @@ HRESULT DeckLinkDevice::ScheduledFrameCallback(
 {
   (void)(completed_frame);
   (void)(result);
-  IDeckLinkMutableVideoFrame* next_frame = nullptr;
+
+  // Make a SDI control packet
+  BlackmagicSDICameraControlPacketHandle control_packet;
   {
     std::lock_guard<std::mutex> lock(camera_command_queue_lock_);
-    if (camera_command_queue_.size() > 0)
+    const size_t pending_commands = camera_command_queue_.size();
+    if (pending_commands > 0)
     {
-      next_frame = blue_command_output_frame_.get();
+      ROS_INFO_NAMED(
+          ros::this_node::getName(),
+          "%zu SDI command(s) pending, sending command frame",
+          pending_commands);
+
+      control_packet = BlackmagicSDICameraControlPacketHandle(
+          new BlackmagicSDICameraControlPacket());
 
       // Pack as many camera commands as fit into the ancillary packet
-      BlackmagicSDICameraControlPacketHandle control_packet(
-          new BlackmagicSDICameraControlPacket());
       bool packet_space_remaining = true;
       while ((camera_command_queue_.size() > 0) && packet_space_remaining)
       {
@@ -614,57 +685,59 @@ HRESULT DeckLinkDevice::ScheduledFrameCallback(
         }
       }
 
-      // Get ancillary packets
-      IDeckLinkVideoFrameAncillaryPackets* ancillary_packets_ptr = nullptr;
-      const auto get_ancillary_packets_result = next_frame->QueryInterface(
-          IID_IDeckLinkVideoFrameAncillaryPackets,
-          reinterpret_cast<void**>(&ancillary_packets_ptr));
-      DeckLinkVideoFrameAncillaryPacketsHandle ancillary_packets;
-      if (get_ancillary_packets_result == S_OK
-          && ancillary_packets_ptr != nullptr)
-      {
-        ancillary_packets
-            = DeckLinkVideoFrameAncillaryPacketsHandle(ancillary_packets_ptr);
-      }
-      else
-      {
-        throw std::runtime_error("Failed to retrieve ancillary packets");
-      }
+      ROS_INFO_NAMED(
+          ros::this_node::getName(),
+          "Assembled SDI command packet with %zu of %zu pending command(s)",
+          pending_commands - camera_command_queue_.size(), pending_commands);
+    }
+  }
 
-      // Get rid of any existing packets
-      const auto detach_packets_result = ancillary_packets->DetachAllPackets();
-      if (detach_packets_result != S_OK)
-      {
-        throw std::runtime_error("Failed to detach existing packets");
-      }
-
-      // Add ancillary packet to the frame
-      const auto add_packet_result
-          = ancillary_packets->AttachPacket(control_packet.get());
-      if (add_packet_result != S_OK)
-      {
-        throw std::runtime_error("Failed to attach control packet");
-      }
-      // Not sure why this is necessary - Blackmagic's examples suggest that
-      // AttachPacket doesn't bump refcount, so we don't want the unique_ptr
-      // destructor to get rid of the control packet.
-      else
-      {
-        control_packet.release();
-      }
+  if (control_packet)
+  {
+    // Get ancillary packets
+    IDeckLinkVideoFrameAncillaryPackets* ancillary_packets_ptr = nullptr;
+    const auto get_ancillary_packets_result
+        = red_command_output_frame_->QueryInterface(
+            IID_IDeckLinkVideoFrameAncillaryPackets,
+            reinterpret_cast<void**>(&ancillary_packets_ptr));
+    DeckLinkVideoFrameAncillaryPacketsHandle ancillary_packets;
+    if (get_ancillary_packets_result == S_OK
+        && ancillary_packets_ptr != nullptr)
+    {
+      ancillary_packets
+          = DeckLinkVideoFrameAncillaryPacketsHandle(ancillary_packets_ptr);
     }
     else
     {
-      next_frame = blue_reference_output_frame_.get();
+      throw std::runtime_error("Failed to retrieve ancillary packets");
     }
-  }
-  if (next_frame != nullptr)
-  {
-    return ScheduleNextFrame(*next_frame);
+
+    // Get rid of any existing packets
+    const auto detach_packets_result = ancillary_packets->DetachAllPackets();
+    if (detach_packets_result != S_OK)
+    {
+      throw std::runtime_error("Failed to detach existing packets");
+    }
+
+    // Add ancillary packet to the frame
+    const auto add_packet_result
+        = ancillary_packets->AttachPacket(control_packet.get());
+    if (add_packet_result != S_OK)
+    {
+      throw std::runtime_error("Failed to attach control packet");
+    }
+    // Not sure why this is necessary - Blackmagic's examples suggest that
+    // AttachPacket doesn't bump refcount, so we don't want the unique_ptr
+    // destructor to get rid of the control packet.
+    else
+    {
+      control_packet.release();
+    }
+    return ScheduleNextFrame(*red_command_output_frame_);
   }
   else
   {
-    throw std::runtime_error("Failed to select valid next frame");
+    return ScheduleNextFrame(*blue_reference_output_frame_);
   }
 }
 }  // namespace blackmagic_camera_driver

@@ -26,8 +26,18 @@ using DeckLinkInputCallbackHandle = BMDHandle<IDeckLinkInputCallback>;
 using DeckLinkOutputCallbackHandle = BMDHandle<IDeckLinkVideoOutputCallback>;
 using DeckLinkMutableVideoFrameHandle = BMDHandle<IDeckLinkMutableVideoFrame>;
 using DeckLinkVideoConversionHandle = BMDHandle<IDeckLinkVideoConversion>;
+using DeckLinkAncillaryPacketIteratorHandle
+    = BMDHandle<IDeckLinkAncillaryPacketIterator>;
+using DeckLinkAncillaryPacketHandle = BMDHandle<IDeckLinkAncillaryPacket>;
 using DeckLinkVideoFrameAncillaryPacketsHandle
     = BMDHandle<IDeckLinkVideoFrameAncillaryPackets>;
+
+inline int16_t ConvertToFixed16(const float val)
+{
+  const float multiplier = 1 << 11;
+  const float multiplied = val * multiplier;
+  return static_cast<int16_t>(multiplied);
+}
 
 // Forward declaration
 class DeckLinkDevice;
@@ -332,6 +342,6 @@ private:
   DeckLinkOutputCallbackHandle output_callback_;
   DeckLinkMutableVideoFrameHandle conversion_frame_;
   DeckLinkMutableVideoFrameHandle blue_reference_output_frame_;
-  DeckLinkMutableVideoFrameHandle blue_command_output_frame_;
+  DeckLinkMutableVideoFrameHandle red_command_output_frame_;
 };
 }  // namespace blackmagic_camera_driver
