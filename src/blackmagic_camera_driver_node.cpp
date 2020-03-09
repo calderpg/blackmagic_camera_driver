@@ -78,32 +78,32 @@ int DoMain()
     capture_device.StartVideoCapture();
 
     // Wait for inputs to stabilize before sending commands
-    std::this_thread::sleep_for(std::chrono::seconds(1));
+    std::this_thread::sleep_for(std::chrono::seconds(5));
 
-    const uint16_t set_focus = ConvertToFixed16(0.5);
-    ROS_INFO("mid focus command %hx", set_focus);
-    const uint8_t set_focus_bottom_byte
-        = static_cast<uint8_t>(set_focus & 0x00ff);
-    const uint8_t set_focus_top_byte
-        = static_cast<uint8_t>((set_focus & 0xff00) >> 8);
-    // Focus to the near limit
-    const BlackmagicSDICameraControlMessage set_focus_command(
-        camera_id,  // Destination camera
-        0x00,  // "Change configuration"
-        {0x00,  // "Lens"
-         0x00,  // "Focus"
-         0x00, 0x00,  // Empty
-         set_focus_bottom_byte, set_focus_top_byte});  // Mid focus
-
-    capture_device.EnqueueCameraCommand(set_focus_command);
-
-    // // Run an instantaneous autofocus
-    // const BlackmagicSDICameraControlMessage autofocus_command(
+    // const uint16_t set_focus = ConvertToFixed16(0.5);
+    // ROS_INFO("mid focus command %hx", set_focus);
+    // const uint8_t set_focus_bottom_byte
+    //     = static_cast<uint8_t>(set_focus & 0x00ff);
+    // const uint8_t set_focus_top_byte
+    //     = static_cast<uint8_t>((set_focus & 0xff00) >> 8);
+    // // Focus to the near limit
+    // const BlackmagicSDICameraControlMessage set_focus_command(
     //     camera_id,  // Destination camera
     //     0x00,  // "Change configuration"
-    //     {0x00, 0x01, 0x00, 0x00});  // "Lens", "Autofocus", 0, 0
+    //     {0x00,  // "Lens"
+    //      0x00,  // "Focus"
+    //      0x00, 0x00,  // Empty
+    //      set_focus_bottom_byte, set_focus_top_byte});  // Mid focus
 
-    // capture_device.EnqueueCameraCommand(autofocus_command);
+    // capture_device.EnqueueCameraCommand(set_focus_command);
+
+    // Run an instantaneous autofocus
+    const BlackmagicSDICameraControlMessage autofocus_command(
+        camera_id,  // Destination camera
+        0x00,  // "Change configuration"
+        {0x00, 0x01, 0x00, 0x00});  // "Lens", "Autofocus", 0, 0
+
+    capture_device.EnqueueCameraCommand(autofocus_command);
 
     // // Turn on OIS (if available)
     // const BlackmagicSDICameraControlMessage enable_ois_command(

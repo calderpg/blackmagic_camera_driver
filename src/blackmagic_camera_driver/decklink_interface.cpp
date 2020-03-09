@@ -18,8 +18,11 @@ namespace blackmagic_camera_driver
 // Default format, overriden by the automatic video input format detection.
 const int32_t kDefaultImageWidth = 1920;
 const int32_t kDefaultImageHeight = 1080;
-const BMDDisplayMode kDefaultDisplayMode = bmdModeHD1080p30;
+const BMDDisplayMode kDefaultInputDisplayMode = bmdModeHD1080p30;
 const BMDPixelFormat kDefaultInputPixelFormat = bmdFormat8BitYUV;
+
+// Output video format, used to send VANC commands.
+const BMDDisplayMode kOutputDisplayMode = bmdModeHD1080i50;  // bmdModeHD1080p30;
 // Undocumented, but it looks like output must be v210 YUV for VANC data to be
 // encoded into frames properly.
 const BMDPixelFormat kOutputPixelFormat = bmdFormat10BitYUV;
@@ -165,7 +168,7 @@ DeckLinkDevice::DeckLinkDevice(
   bool command_output_format_supported = false;
   const auto get_command_output_format_supported_result
       = output_device_->DoesSupportVideoMode(
-          bmdVideoConnectionUnspecified, kDefaultDisplayMode,
+          bmdVideoConnectionUnspecified, kOutputDisplayMode,
           kOutputPixelFormat, bmdSupportedVideoModeDefault, nullptr,
           &command_output_format_supported);
   if (get_command_output_format_supported_result == S_OK)
@@ -184,7 +187,7 @@ DeckLinkDevice::DeckLinkDevice(
   // Get output display format information
   IDeckLinkDisplayMode* output_display_mode_ptr = nullptr;
   const auto get_display_mode_result = output_device_->GetDisplayMode(
-      kDefaultDisplayMode, &output_display_mode_ptr);
+      kOutputDisplayMode, &output_display_mode_ptr);
   if (get_display_mode_result != S_OK)
   {
     throw std::runtime_error("Failed to get output display mode");
@@ -334,8 +337,8 @@ DeckLinkDevice::DeckLinkDevice(
 
 void DeckLinkDevice::StartVideoCapture()
 {
-  EnableVideoInput(kDefaultDisplayMode, kDefaultInputPixelFormat);
-  EnableVideoOutput(kDefaultDisplayMode);
+  EnableVideoInput(kDefaultInputDisplayMode, kDefaultInputPixelFormat);
+  EnableVideoOutput(kOutputDisplayMode);
   // Blackmagic's examples all schedule 3 frames before starting scheduled
   // playback.
   for (int32_t i = 0; i < 3; i++)
@@ -645,11 +648,40 @@ void DeckLinkDevice::LogVideoFrameAncillaryPackets(
 
     for (size_t idx = 0; idx < received_packets.size(); idx++)
     {
+      const auto& packet = received_packets.at(idx);
+
+      const uint8_t* packet_data_ptr = nullptr;
+      uint32_t packet_data_size = 0u;
+      const auto get_bytes_result = packet->GetBytes(
+          bmdAncillaryPacketFormatUInt8,
+          reinterpret_cast<const void**>(&packet_data_ptr), &packet_data_size);
+
+      std::string data_str;
+      if (get_bytes_result == S_OK)
+      {
+        for (uint32_t data_idx = 0; data_idx < packet_data_size; data_idx++)
+        {
+          const uint8_t data_val = packet_data_ptr[data_idx];
+          if (data_idx > 0)
+          {
+            data_str += ", ";
+          }
+          data_str += std::to_string(static_cast<uint32_t>(data_val));
+        }
+      }
+      else
+      {
+        data_str = "non-uint8_t packet data";
+      }
+
+
       ROS_INFO_NAMED(
           ros::this_node::getName(),
-          "[%s] Ancillary packet [%zu] has DID %u and SDID %u", msg.c_str(),
-          idx, static_cast<uint32_t>(received_packets.at(idx)->GetDID()),
-          static_cast<uint32_t>(received_packets.at(idx)->GetSDID()));
+          "[%s] Ancillary packet [%zu] has DID 0x%hhx, SDID 0x%hhx, line number"
+          " %u, data stream index 0x%hhx, and data: [%s]",
+          msg.c_str(), idx, packet->GetDID(), packet->GetSDID(),
+          packet->GetLineNumber(), packet->GetDataStreamIndex(),
+          data_str.c_str());
     }
   }
 }
