@@ -42,7 +42,6 @@ int DoMain()
 
   const uint8_t camera_id = static_cast<uint8_t>(camera_number);
 
-
   // Discover DeckLink devices
   DeckLinkIteratorHandle device_iterator(CreateDeckLinkIteratorInstance());
   if (device_iterator)
@@ -77,9 +76,6 @@ int DoMain()
     ROS_INFO_NAMED(ros::this_node::getName(), "Starting capture...");
     capture_device.StartVideoCapture();
 
-    // Wait for inputs to stabilize before sending commands
-    std::this_thread::sleep_for(std::chrono::seconds(5));
-
     // const uint16_t set_focus = ConvertToFixed16(0.5);
     // ROS_INFO("mid focus command %hx", set_focus);
     // const uint8_t set_focus_bottom_byte
@@ -97,38 +93,39 @@ int DoMain()
 
     // capture_device.EnqueueCameraCommand(set_focus_command);
 
+    const uint8_t assign_value = 0x00;
+
+    // Turn on OIS (if available)
+    const BlackmagicSDICameraControlMessage enable_ois_command
+        = BlackmagicSDICameraControlMessage::MakeCommandBool(
+            camera_id, 0x00, 0x06, assign_value, true);
+
+    capture_device.EnqueueCameraCommand(enable_ois_command);
+
     // Run an instantaneous autofocus
-    const BlackmagicSDICameraControlMessage autofocus_command(
-        camera_id,  // Destination camera
-        0x00,  // "Change configuration"
-        {0x00, 0x01, 0x00, 0x00});  // "Lens", "Autofocus", 0, 0
+    const BlackmagicSDICameraControlMessage autofocus_command
+        = BlackmagicSDICameraControlMessage::MakeCommandVoid(
+            camera_id, 0x00, 0x01);
 
     capture_device.EnqueueCameraCommand(autofocus_command);
 
-    // // Turn on OIS (if available)
-    // const BlackmagicSDICameraControlMessage enable_ois_command(
-    //     camera_id,  // Destination camera
-    //     0x00,  // "Change configuration"
-    //     {0x00, 0x06, 0x00, 0x00, 0x01});  // "Lens", "OIS", 0, 0, "enable"
-
-    // capture_device.EnqueueCameraCommand(enable_ois_command);
+    std::this_thread::sleep_for(std::chrono::seconds(1));
 
     // Spin while video callbacks run
     ros::Rate spin_rate(30.0);
     while (ros::ok())
     {
-      // capture_device.EnqueueCameraCommand(set_focus_command);
       ros::spinOnce();
       spin_rate.sleep();
     }
 
-    // // Turn off OIS (if available)
-    // const BlackmagicSDICameraControlMessage disable_ois_command(
-    //     camera_id,  // Destination camera
-    //     0x00,  // "Change configuration"
-    //     {0x00, 0x06, 0x00, 0x00, 0x00});  // "Lens", "OIS", 0, 0, "disable"
+    const BlackmagicSDICameraControlMessage disable_ois_command
+        = BlackmagicSDICameraControlMessage::MakeCommandBool(
+            camera_id, 0x00, 0x06, assign_value, false);
 
-    // capture_device.EnqueueCameraCommand(disable_ois_command);
+    capture_device.EnqueueCameraCommand(disable_ois_command);
+
+    std::this_thread::sleep_for(std::chrono::seconds(1));
 
     // Stop capture
     ROS_INFO_NAMED(ros::this_node::getName(), "Stopping capture...");

@@ -1,11 +1,13 @@
 #include <blackmagic_camera_driver/decklink_interface.hpp>
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <iostream>
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 #include <blackmagic_camera_driver/bmd_handle.hpp>
 #include <image_transport/image_transport.h>
@@ -22,7 +24,7 @@ const BMDDisplayMode kDefaultInputDisplayMode = bmdModeHD1080p30;
 const BMDPixelFormat kDefaultInputPixelFormat = bmdFormat8BitYUV;
 
 // Output video format, used to send VANC commands.
-const BMDDisplayMode kOutputDisplayMode = bmdModeHD1080i50;  // bmdModeHD1080p30;
+const BMDDisplayMode kOutputDisplayMode = bmdModeHD1080p30;
 // Undocumented, but it looks like output must be v210 YUV for VANC data to be
 // encoded into frames properly.
 const BMDPixelFormat kOutputPixelFormat = bmdFormat10BitYUV;
@@ -350,10 +352,14 @@ void DeckLinkDevice::StartVideoCapture()
   }
   StartStreams();
   StartScheduledPlayback();
+  TallyOn();
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
 }
 
 void DeckLinkDevice::StopVideoCapture()
 {
+  TallyOff();
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
   StopStreams();
   StopScheduledPlayback();
   DisableVideoInput();
@@ -568,7 +574,7 @@ HRESULT DeckLinkDevice::InputFormatChangedCallback(
 
 HRESULT DeckLinkDevice::ScheduleNextFrame(IDeckLinkVideoFrame& video_frame)
 {
-  LogVideoFrameAncillaryPackets(video_frame, "ScheduleNextFrame");
+  LogVideoFrameAncillaryPackets(video_frame, "ScheduleNextFrame", true);
 
   const auto scheduled_result = output_device_->ScheduleVideoFrame(
       &video_frame, output_frame_counter_ * output_frame_duration_,
@@ -587,7 +593,8 @@ HRESULT DeckLinkDevice::ScheduleNextFrame(IDeckLinkVideoFrame& video_frame)
 }
 
 void DeckLinkDevice::LogVideoFrameAncillaryPackets(
-    const IDeckLinkVideoFrame& video_frame, const std::string& msg)
+    const IDeckLinkVideoFrame& video_frame, const std::string& msg,
+    const bool log_debug)
 {
   // Get ancillary packets
   IDeckLinkVideoFrameAncillaryPackets* ancillary_packets_ptr = nullptr;
@@ -641,10 +648,20 @@ void DeckLinkDevice::LogVideoFrameAncillaryPackets(
 
   if (received_packets.size() > 0)
   {
-    ROS_INFO_NAMED(
+    if (log_debug)
+    {
+      ROS_DEBUG_NAMED(
+          ros::this_node::getName(),
+          "[%s] Video frame contains %zu SDI ancillary packets", msg.c_str(),
+          received_packets.size());
+    }
+    else
+    {
+      ROS_INFO_NAMED(
         ros::this_node::getName(),
         "[%s] Video frame contains %zu SDI ancillary packets", msg.c_str(),
         received_packets.size());
+    }
 
     for (size_t idx = 0; idx < received_packets.size(); idx++)
     {
@@ -674,14 +691,26 @@ void DeckLinkDevice::LogVideoFrameAncillaryPackets(
         data_str = "non-uint8_t packet data";
       }
 
-
-      ROS_INFO_NAMED(
-          ros::this_node::getName(),
-          "[%s] Ancillary packet [%zu] has DID 0x%hhx, SDID 0x%hhx, line number"
-          " %u, data stream index 0x%hhx, and data: [%s]",
-          msg.c_str(), idx, packet->GetDID(), packet->GetSDID(),
-          packet->GetLineNumber(), packet->GetDataStreamIndex(),
-          data_str.c_str());
+      if (log_debug)
+      {
+        ROS_DEBUG_NAMED(
+            ros::this_node::getName(),
+            "[%s] Ancillary packet [%zu] has DID 0x%hhx, SDID 0x%hhx, VANC line"
+            " %u, data stream index 0x%hhx, and data: [%s]",
+            msg.c_str(), idx, packet->GetDID(), packet->GetSDID(),
+            packet->GetLineNumber(), packet->GetDataStreamIndex(),
+            data_str.c_str());
+      }
+      else
+      {
+        ROS_INFO_NAMED(
+            ros::this_node::getName(),
+            "[%s] Ancillary packet [%zu] has DID 0x%hhx, SDID 0x%hhx, VANC line"
+            " %u, data stream index 0x%hhx, and data: [%s]",
+            msg.c_str(), idx, packet->GetDID(), packet->GetSDID(),
+            packet->GetLineNumber(), packet->GetDataStreamIndex(),
+            data_str.c_str());
+      }
     }
   }
 }
@@ -710,7 +739,7 @@ HRESULT DeckLinkDevice::FrameCallback(
       throw std::runtime_error("Failed to get frame bytes");
     }
 
-    LogVideoFrameAncillaryPackets(video_frame, "FrameCallback");
+    LogVideoFrameAncillaryPackets(video_frame, "FrameCallback", false);
   }
   else
   {
@@ -727,6 +756,9 @@ HRESULT DeckLinkDevice::ScheduledFrameCallback(
   (void)(result);
 
   // Make a SDI control packet
+  using BlackmagicSDICameraControlPacketHandle
+      = BMDHandle<BlackmagicSDICameraControlPacket>;
+
   BlackmagicSDICameraControlPacketHandle control_packet;
   {
     std::lock_guard<std::mutex> lock(camera_command_queue_lock_);
@@ -763,39 +795,58 @@ HRESULT DeckLinkDevice::ScheduledFrameCallback(
     }
   }
 
+  // Get ancillary packets
+  IDeckLinkVideoFrameAncillaryPackets* ancillary_packets_ptr = nullptr;
+  const auto get_ancillary_packets_result
+      = command_output_frame_->QueryInterface(
+          IID_IDeckLinkVideoFrameAncillaryPackets,
+          reinterpret_cast<void**>(&ancillary_packets_ptr));
+  DeckLinkVideoFrameAncillaryPacketsHandle ancillary_packets;
+  if (get_ancillary_packets_result == S_OK
+      && ancillary_packets_ptr != nullptr)
+  {
+    ancillary_packets
+        = DeckLinkVideoFrameAncillaryPacketsHandle(ancillary_packets_ptr);
+  }
+  else
+  {
+    throw std::runtime_error("Failed to retrieve ancillary packets");
+  }
+
+  // Get rid of any existing packets
+  const auto detach_packets_result = ancillary_packets->DetachAllPackets();
+  if (detach_packets_result != S_OK)
+  {
+    throw std::runtime_error("Failed to detach existing packets");
+  }
+
+  // Add a tally packet
+  DeckLinkAncillaryPacketHandle tally_packet(
+      new BlackmagicSDITallyControlPacket(enable_tally_.load()));
+
+  const auto add_tally_packet_result
+      = ancillary_packets->AttachPacket(tally_packet.get());
+  if (add_tally_packet_result != S_OK)
+  {
+    throw std::runtime_error("Failed to attach tally control packet");
+  }
+  // Not sure why this is necessary - Blackmagic's examples suggest that
+  // AttachPacket doesn't bump refcount, so we don't want the unique_ptr
+  // destructor to get rid of the tally packet.
+  else
+  {
+    tally_packet.release();
+  }
+
+  // Add a control packet
   if (control_packet)
   {
-    // Get ancillary packets
-    IDeckLinkVideoFrameAncillaryPackets* ancillary_packets_ptr = nullptr;
-    const auto get_ancillary_packets_result
-        = command_output_frame_->QueryInterface(
-            IID_IDeckLinkVideoFrameAncillaryPackets,
-            reinterpret_cast<void**>(&ancillary_packets_ptr));
-    DeckLinkVideoFrameAncillaryPacketsHandle ancillary_packets;
-    if (get_ancillary_packets_result == S_OK
-        && ancillary_packets_ptr != nullptr)
-    {
-      ancillary_packets
-          = DeckLinkVideoFrameAncillaryPacketsHandle(ancillary_packets_ptr);
-    }
-    else
-    {
-      throw std::runtime_error("Failed to retrieve ancillary packets");
-    }
-
-    // Get rid of any existing packets
-    const auto detach_packets_result = ancillary_packets->DetachAllPackets();
-    if (detach_packets_result != S_OK)
-    {
-      throw std::runtime_error("Failed to detach existing packets");
-    }
-
     // Add ancillary packet to the frame
-    const auto add_packet_result
+    const auto add_control_packet_result
         = ancillary_packets->AttachPacket(control_packet.get());
-    if (add_packet_result != S_OK)
+    if (add_control_packet_result != S_OK)
     {
-      throw std::runtime_error("Failed to attach control packet");
+      throw std::runtime_error("Failed to attach camera control packet");
     }
     // Not sure why this is necessary - Blackmagic's examples suggest that
     // AttachPacket doesn't bump refcount, so we don't want the unique_ptr
@@ -804,11 +855,7 @@ HRESULT DeckLinkDevice::ScheduledFrameCallback(
     {
       control_packet.release();
     }
-    return ScheduleNextFrame(*command_output_frame_);
   }
-  else
-  {
-    return ScheduleNextFrame(*reference_output_frame_);
-  }
+  return ScheduleNextFrame(*command_output_frame_);
 }
 }  // namespace blackmagic_camera_driver

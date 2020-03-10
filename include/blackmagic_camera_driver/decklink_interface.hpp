@@ -35,7 +35,17 @@ using DeckLinkVideoFrameAncillaryPacketsHandle
 inline int16_t ConvertToFixed16(const float val)
 {
   const float multiplier = 1 << 11;
-  const float multiplied = val * multiplier;
+  float multiplied = val * multiplier;
+
+  if (multiplied > 32767)
+  {
+    multiplied = 32767;
+  }
+  else if (multiplied < -32768)
+  {
+    multiplied = -32768;
+  }
+
   return static_cast<int16_t>(multiplied);
 }
 
@@ -142,36 +152,210 @@ private:
 class BlackmagicSDICameraControlMessage
 {
 public:
-  BlackmagicSDICameraControlMessage(
-      const uint8_t destination_device, const uint8_t command_id,
-      const std::vector<uint8_t>& command_data)
+  static BlackmagicSDICameraControlMessage MakeCommandVoid(
+      const uint8_t destination_device, const uint8_t category,
+      const uint8_t parameter)
   {
-    if (command_data.size() > 60)
-    {
-      throw std::runtime_error("command_data cannot be larger than 60 bytes");
-    }
-    // Assemble byte representation of message according to the Blackmagic SDI
-    // Camera Control Protocol
-    bytes_.push_back(destination_device);
-    bytes_.push_back(static_cast<uint8_t>(command_data.size()));
-    bytes_.push_back(command_id);
-    bytes_.push_back(0x00); // Reserved/padding byte.
-    bytes_.insert(bytes_.end(), command_data.begin(), command_data.end());
-    // Add padding bytes to ensure message is 32-bit aligned
-    const size_t padding_alignment = 4;
-    const size_t padding_offset = bytes_.size() % padding_alignment;
-    if (padding_offset > 0)
-    {
-      const size_t padding_size = padding_alignment - padding_offset;
-      const size_t padded_size = bytes_.size() + padding_size;
-      // Resizing larger appends new elements to the vector
-      bytes_.resize(padded_size, 0x00);
-    }
+    std::vector<uint8_t> bytes(12, 0x00);
+
+    // Header
+    bytes.at(0) = destination_device;
+    bytes.at(1) = 4;
+    bytes.at(2) = 0x00;
+    bytes.at(3) = 0x00;
+
+    // Payload
+    bytes.at(4) = category;
+    bytes.at(5) = parameter;
+    bytes.at(6) = 0x00;
+    bytes.at(7) = 0x00;
+
+    bytes.at(8) = 0x01;
+    bytes.at(9) = 0x00;
+    bytes.at(10) = 0x00;
+    bytes.at(11) = 0x00;
+
+    return BlackmagicSDICameraControlMessage(bytes);
+  }
+
+  static BlackmagicSDICameraControlMessage MakeCommandBool(
+      const uint8_t destination_device, const uint8_t category,
+      const uint8_t parameter, const uint8_t operation, const bool value)
+  {
+    std::vector<uint8_t> bytes(12, 0x00);
+
+    // Header
+    bytes.at(0) = destination_device;
+    bytes.at(1) = 5;
+    bytes.at(2) = 0x00;
+    bytes.at(3) = 0x00;
+
+    // Payload
+    bytes.at(4) = category;
+    bytes.at(5) = parameter;
+    bytes.at(6) = 0x00;
+    bytes.at(7) = operation;
+
+    bytes.at(8) = (value) ? 0x01 : 0x00;
+    bytes.at(9) = 0x00;
+    bytes.at(10) = 0x00;
+    bytes.at(11) = 0x00;
+
+    return BlackmagicSDICameraControlMessage(bytes);
+  }
+
+  static BlackmagicSDICameraControlMessage MakeCommandInt8(
+      const uint8_t destination_device, const uint8_t category,
+      const uint8_t parameter, const uint8_t operation, const int8_t value)
+  {
+    std::vector<uint8_t> bytes(12, 0x00);
+
+    // Header
+    bytes.at(0) = destination_device;
+    bytes.at(1) = 5;
+    bytes.at(2) = 0x00;
+    bytes.at(3) = 0x00;
+
+    // Payload
+    bytes.at(4) = category;
+    bytes.at(5) = parameter;
+    bytes.at(6) = 0x01;
+    bytes.at(7) = operation;
+
+    bytes.at(8) = value;
+    bytes.at(9) = 0x00;
+    bytes.at(10) = 0x00;
+    bytes.at(11) = 0x00;
+
+    return BlackmagicSDICameraControlMessage(bytes);
+  }
+
+  static BlackmagicSDICameraControlMessage MakeCommandInt16(
+      const uint8_t destination_device, const uint8_t category,
+      const uint8_t parameter, const uint8_t operation, const int16_t value)
+  {
+    std::vector<uint8_t> bytes(12, 0x00);
+
+    // Header
+    bytes.at(0) = destination_device;
+    bytes.at(1) = 6;
+    bytes.at(2) = 0x00;
+    bytes.at(3) = 0x00;
+
+    // Payload
+    bytes.at(4) = category;
+    bytes.at(5) = parameter;
+    bytes.at(6) = 0x02;
+    bytes.at(7) = operation;
+
+    bytes.at(8) = static_cast<uint8_t>((value >> 0) & 0xff);
+    bytes.at(9) = static_cast<uint8_t>((value >> 8) & 0xff);
+    bytes.at(10) = 0x00;
+    bytes.at(11) = 0x00;
+
+    return BlackmagicSDICameraControlMessage(bytes);
+  }
+
+  static BlackmagicSDICameraControlMessage MakeCommand1nt32(
+      const uint8_t destination_device, const uint8_t category,
+      const uint8_t parameter, const uint8_t operation, const int32_t value)
+  {
+    std::vector<uint8_t> bytes(12, 0x00);
+
+    // Header
+    bytes.at(0) = destination_device;
+    bytes.at(1) = 8;
+    bytes.at(2) = 0x00;
+    bytes.at(3) = 0x00;
+
+    // Payload
+    bytes.at(4) = category;
+    bytes.at(5) = parameter;
+    bytes.at(6) = 0x03;
+    bytes.at(7) = operation;
+
+    bytes.at(8) = static_cast<uint8_t>((value >> 0) & 0xff);
+    bytes.at(9) = static_cast<uint8_t>((value >> 8) & 0xff);
+    bytes.at(10) = static_cast<uint8_t>((value >> 16) & 0xff);
+    bytes.at(11) = static_cast<uint8_t>((value >> 24) & 0xff);
+
+    return BlackmagicSDICameraControlMessage(bytes);
+  }
+
+  static BlackmagicSDICameraControlMessage MakeCommand1nt64(
+      const uint8_t destination_device, const uint8_t category,
+      const uint8_t parameter, const uint8_t operation, const int64_t value)
+  {
+    std::vector<uint8_t> bytes(16, 0x00);
+
+    // Header
+    bytes.at(0) = destination_device;
+    bytes.at(1) = 12;
+    bytes.at(2) = 0x00;
+    bytes.at(3) = 0x00;
+
+    // Payload
+    bytes.at(4) = category;
+    bytes.at(5) = parameter;
+    bytes.at(6) = 0x04;
+    bytes.at(7) = operation;
+
+    bytes.at(8) = static_cast<uint8_t>((value >> 0) & 0xff);
+    bytes.at(9) = static_cast<uint8_t>((value >> 8) & 0xff);
+    bytes.at(10) = static_cast<uint8_t>((value >> 16) & 0xff);
+    bytes.at(11) = static_cast<uint8_t>((value >> 24) & 0xff);
+
+    bytes.at(12) = static_cast<uint8_t>((value >> 32) & 0xff);
+    bytes.at(13) = static_cast<uint8_t>((value >> 40) & 0xff);
+    bytes.at(14) = static_cast<uint8_t>((value >> 48) & 0xff);
+    bytes.at(15) = static_cast<uint8_t>((value >> 56) & 0xff);
+
+    return BlackmagicSDICameraControlMessage(bytes);
+  }
+
+  static BlackmagicSDICameraControlMessage MakeCommandFixed16(
+      const uint8_t destination_device, const uint8_t category,
+      const uint8_t parameter, const uint8_t operation, const float value)
+  {
+    std::vector<uint8_t> bytes(12, 0x00);
+
+    // Header
+    bytes.at(0) = destination_device;
+    bytes.at(1) = 6;
+    bytes.at(2) = 0x00;
+    bytes.at(3) = 0x00;
+
+    // Payload
+    bytes.at(4) = category;
+    bytes.at(5) = parameter;
+    bytes.at(6) = 128;
+    bytes.at(7) = operation;
+
+    const int16_t fixed16_value = ConvertToFixed16(value);
+
+    bytes.at(8) = static_cast<uint8_t>((fixed16_value >> 0) & 0xff);
+    bytes.at(9) = static_cast<uint8_t>((fixed16_value >> 8) & 0xff);
+    bytes.at(10) = 0x00;
+    bytes.at(11) = 0x00;
+
+    return BlackmagicSDICameraControlMessage(bytes);
   }
 
   const std::vector<uint8_t>& GetBytes() const { return bytes_; }
 
 private:
+  explicit BlackmagicSDICameraControlMessage(const std::vector<uint8_t>& bytes)
+      : bytes_(bytes)
+  {
+    const size_t message_alignment = 4;
+    if ((bytes_.size() % message_alignment) != 0)
+    {
+      throw std::invalid_argument(
+          "Camera control message of " + std::to_string(bytes_.size())
+          + " is not 4-byte aligned");
+    }
+  }
+
   std::vector<uint8_t> bytes_;
 };
 
@@ -257,8 +441,81 @@ private:
   std::atomic<uint64_t> refcount_{};
 };
 
-using BlackmagicSDICameraControlPacketHandle
-    = BMDHandle<BlackmagicSDICameraControlPacket>;
+class BlackmagicSDITallyControlPacket : public IDeckLinkAncillaryPacket
+{
+public:
+  BlackmagicSDITallyControlPacket(const bool tally_on)
+  {
+    const uint8_t tally_header = 0b00000011;
+    const uint8_t tally_command = (tally_on) ? 0b00110011 : 0b00000000;
+    const std::vector<uint8_t> device_tally(50, tally_command);
+    bytes_ = {tally_header};
+    bytes_.insert(bytes_.end(), device_tally.begin(), device_tally.end());
+  }
+
+  HRESULT GetBytes(
+      BMDAncillaryPacketFormat format, const void** data,
+      uint32_t* size) override
+  {
+    if (format == bmdAncillaryPacketFormatUInt8)
+    {
+      if (data != nullptr)
+      {
+        *data = bytes_.data();
+      }
+      if (size != nullptr)
+      {
+        *size = static_cast<uint32_t>(bytes_.size());
+      }
+      return S_OK;
+    }
+    else
+    {
+      return E_NOTIMPL;
+    }
+  }
+
+  uint8_t GetDID() override { return did_; }
+
+  uint8_t GetSDID() override { return sdid_; }
+
+  uint32_t GetLineNumber() override { return line_number_; }
+
+  uint8_t GetDataStreamIndex() override { return data_stream_index_; }
+
+  // Dummy implementation
+  HRESULT QueryInterface(REFIID iid, LPVOID* ppv) override
+  {
+    (void)(iid);
+    (void)(ppv);
+    return E_NOINTERFACE;
+  }
+
+  // Reference count handling
+  ULONG AddRef() override
+  {
+    return ++refcount_;
+  }
+
+  ULONG Release() override
+  {
+    const uint64_t refcount = --refcount_;
+    if (refcount == 0)
+    {
+      delete this;
+    }
+    return refcount;
+  }
+
+private:
+  std::vector<uint8_t> bytes_;
+  // These are specified in the Blackmagic SDI Tally Control Protocol.
+  const uint8_t did_ = 0x51;
+  const uint8_t sdid_ = 0x52;
+  const uint32_t line_number_ = 15;
+  const uint8_t data_stream_index_ = 0x00;
+  std::atomic<uint64_t> refcount_{};
+};
 
 class DeckLinkDevice
 {
@@ -298,6 +555,10 @@ private:
 
   void StopScheduledPlayback();
 
+  void TallyOn() { enable_tally_.store(true); }
+
+  void TallyOff() { enable_tally_.store(false); }
+
   HRESULT ScheduleNextFrame(IDeckLinkVideoFrame& video_frame);
 
   void SetupConversionAndPublishingFrames(
@@ -321,7 +582,8 @@ private:
       const BMDOutputFrameCompletionResult result);
 
   void LogVideoFrameAncillaryPackets(
-      const IDeckLinkVideoFrame& video_frame, const std::string& msg);
+      const IDeckLinkVideoFrame& video_frame, const std::string& msg,
+      const bool log_debug);
 
   ros::NodeHandle nh_;
   image_transport::ImageTransport it_;
@@ -331,6 +593,8 @@ private:
 
   std::mutex camera_command_queue_lock_;
   std::list<BlackmagicSDICameraControlMessage> camera_command_queue_;
+
+  std::atomic<bool> enable_tally_{};
 
   int64_t output_frame_counter_ = 0;
   int64_t output_frame_duration_ = 0;
