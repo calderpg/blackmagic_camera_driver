@@ -93,19 +93,41 @@ int DoMain()
 
     // capture_device.EnqueueCameraCommand(set_focus_command);
 
+    const uint8_t lens_category = 0x00;
+
+    const uint8_t ois_enable = 0x06;
+    const uint8_t ordinal_aperture = 0x04;
+    //const uint8_t normalized_aperture = 0x03;
+    const uint8_t instantaneous_autofocus = 0x01;
+
     const uint8_t assign_value = 0x00;
 
     // Turn on OIS (if available)
     const BlackmagicSDICameraControlMessage enable_ois_command
         = BlackmagicSDICameraControlMessage::MakeCommandBool(
-            camera_id, 0x00, 0x06, assign_value, true);
+            camera_id, lens_category, ois_enable, assign_value, true);
 
     capture_device.EnqueueCameraCommand(enable_ois_command);
+
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+
+    // Open the aperture all the way
+    // const BlackmagicSDICameraControlMessage open_aperture_command
+    //     = BlackmagicSDICameraControlMessage::MakeCommandFixed16(
+    //         camera_id, lens_category, normalized_aperture, assign_value, 0.0);
+
+    const BlackmagicSDICameraControlMessage open_aperture_command
+        = BlackmagicSDICameraControlMessage::MakeCommandInt16(
+            camera_id, lens_category, ordinal_aperture, assign_value, 0);
+
+    capture_device.EnqueueCameraCommand(open_aperture_command);
+
+    std::this_thread::sleep_for(std::chrono::seconds(1));
 
     // Run an instantaneous autofocus
     const BlackmagicSDICameraControlMessage autofocus_command
         = BlackmagicSDICameraControlMessage::MakeCommandVoid(
-            camera_id, 0x00, 0x01);
+            camera_id, lens_category, instantaneous_autofocus);
 
     capture_device.EnqueueCameraCommand(autofocus_command);
 
@@ -121,7 +143,7 @@ int DoMain()
 
     const BlackmagicSDICameraControlMessage disable_ois_command
         = BlackmagicSDICameraControlMessage::MakeCommandBool(
-            camera_id, 0x00, 0x06, assign_value, false);
+            camera_id, lens_category, ois_enable, assign_value, false);
 
     capture_device.EnqueueCameraCommand(disable_ois_command);
 
