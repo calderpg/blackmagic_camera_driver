@@ -2,16 +2,16 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <iostream>
 #include <list>
 #include <mutex>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 #include <blackmagic_camera_driver/bmd_handle.hpp>
-#include <image_transport/image_transport.h>
-#include <ros/ros.h>
 
 #include "DeckLinkAPI_v10_11.h"
 
@@ -48,6 +48,35 @@ inline int16_t ConvertToFixed16(const float val)
 
   return static_cast<int16_t>(multiplied);
 }
+
+template<typename T>
+std::string HexPrint(const T& val)
+{
+  std::ostringstream strm;
+  strm << std::hex << val;
+  return strm.str();
+}
+
+enum class LogLevel : uint8_t
+{
+  DEBUG = 0x01,
+  INFO = 0x02,
+  WARN = 0x03,
+  ERROR = 0x04
+};
+
+using LoggingFunction =
+    std::function<void(const LogLevel, const std::string&, const bool)>;
+
+// Arguments are image width, height, and step in bytes.
+using VideoFrameSizeChangedCallbackFunction =
+    std::function<void(const int32_t, const int32_t, const int32_t)>;
+
+// Note that the IDeckLinkVideoFrame is immutable, but it does not provide const
+// getters, so passing via mutable reference is the only way to avoid const_cast
+// on every access.
+using ConvertedVideoFrameCallbackFunction =
+    std::function<void(IDeckLinkVideoFrame& video_frame)>;
 
 // Forward declaration
 class DeckLinkDevice;
@@ -520,15 +549,48 @@ private:
 class DeckLinkDevice
 {
 public:
-  explicit DeckLinkDevice(
-      const ros::NodeHandle& nh, const std::string& camera_topic,
-      const std::string& camera_frame, DeckLinkHandle device);
+  DeckLinkDevice(
+      const LoggingFunction& logging_fn,
+      const VideoFrameSizeChangedCallbackFunction&
+          video_frame_size_changed_callback_fn,
+      const ConvertedVideoFrameCallbackFunction&
+          converted_video_frame_callback_fn,
+      DeckLinkHandle device);
+
+  virtual ~DeckLinkDevice() {}
 
   void StartVideoCapture();
 
   void StopVideoCapture();
 
   void EnqueueCameraCommand(const BlackmagicSDICameraControlMessage& command);
+
+  void Log(
+      const LogLevel level, const std::string& message,
+      const bool throttle = false)
+  {
+    logging_fn_(level, message, throttle);
+  }
+
+  void LogDebug(const std::string& message, const bool throttle = false)
+  {
+    Log(LogLevel::DEBUG, message, throttle);
+  }
+
+  void LogInfo(const std::string& message, const bool throttle = false)
+  {
+    Log(LogLevel::INFO, message, throttle);
+  }
+
+  void LogWarn(const std::string& message, const bool throttle = false)
+  {
+    Log(LogLevel::WARN, message, throttle);
+  }
+
+  void LogError(const std::string& message, const bool throttle = false)
+  {
+    Log(LogLevel::ERROR, message, throttle);
+  }
 
 private:
   void RestartCapture(
@@ -585,11 +647,9 @@ private:
       const IDeckLinkVideoFrame& video_frame, const std::string& msg,
       const bool log_debug);
 
-  ros::NodeHandle nh_;
-  image_transport::ImageTransport it_;
-  image_transport::Publisher camera_pub_;
-  std::string camera_frame_;
-  sensor_msgs::Image ros_image_;
+  LoggingFunction logging_fn_;
+  VideoFrameSizeChangedCallbackFunction video_frame_size_changed_callback_fn_;
+  ConvertedVideoFrameCallbackFunction converted_video_frame_callback_fn_;
 
   std::mutex camera_command_queue_lock_;
   std::list<BlackmagicSDICameraControlMessage> camera_command_queue_;

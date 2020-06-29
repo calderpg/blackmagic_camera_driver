@@ -1,11 +1,14 @@
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
 #include <vector>
 
 #include <blackmagic_camera_driver/decklink_interface.hpp>
+#include <image_transport/image_transport.h>
 #include <ros/ros.h>
+#include <sensor_msgs/Image.h>
 
 #include "DeckLinkAPI_v10_11.h"
 
@@ -13,6 +16,127 @@ namespace blackmagic_camera_driver
 {
 namespace
 {
+inline ros::console::levels::Level ConvertLogLevels(const LogLevel level)
+{
+  if (level == LogLevel::DEBUG)
+  {
+    return ros::console::levels::Debug;
+  }
+  else if (level == LogLevel::INFO)
+  {
+    return ros::console::levels::Info;
+  }
+  else if (level == LogLevel::WARN)
+  {
+    return ros::console::levels::Warn;
+  }
+  else if (level == LogLevel::ERROR)
+  {
+    return ros::console::levels::Error;
+  }
+  else
+  {
+    throw std::runtime_error("Invalid LogLevel value");
+  }
+}
+
+void RosLoggingFunction(
+    const LogLevel level, const std::string& message, const bool throttle)
+{
+  const auto ros_level = ConvertLogLevels(level);
+  if (throttle)
+  {
+    ROS_LOG_THROTTLE(10, ros_level, ROSCONSOLE_DEFAULT_NAME, message.c_str());
+  }
+  else
+  {
+    ROS_LOG(ros_level, ROSCONSOLE_DEFAULT_NAME, message.c_str());
+  }
+}
+
+class RosDeckLinkDeviceWrapper
+{
+public:
+  RosDeckLinkDeviceWrapper(
+      const ros::NodeHandle& nh, const std::string& camera_topic,
+      const std::string& camera_frame, DeckLinkHandle device)
+      : nh_(nh), it_(nh_), camera_frame_(camera_frame)
+  {
+    // Make the image publisher
+    camera_pub_ = it_.advertise(camera_topic, 1, false);
+
+    VideoFrameSizeChangedCallbackFunction video_frame_size_changed_callback_fn =
+        [&] (const int32_t image_width, const int32_t image_height,
+             const int32_t image_step)
+    {
+      VideoFrameSizeChangedCallback(image_width, image_height, image_step);
+    };
+
+    ConvertedVideoFrameCallbackFunction converted_video_frame_callback_fn =
+        [&] (IDeckLinkVideoFrame& video_frame)
+    {
+      ConvertedVideoFrameCallback(video_frame);
+    };
+
+    // Make the device
+    decklink_device_ = std::unique_ptr<DeckLinkDevice>(new DeckLinkDevice(
+        LoggingFunction(RosLoggingFunction),
+        video_frame_size_changed_callback_fn,
+        converted_video_frame_callback_fn,
+        std::move(device)));
+  }
+
+  void StartVideoCapture() { decklink_device_->StartVideoCapture(); }
+
+  void StopVideoCapture() { decklink_device_->StopVideoCapture(); }
+
+  void EnqueueCameraCommand(const BlackmagicSDICameraControlMessage& command)
+  {
+    decklink_device_->EnqueueCameraCommand(command);
+  }
+
+private:
+  void VideoFrameSizeChangedCallback(
+      const int32_t image_width, const int32_t image_height,
+      const int32_t image_step)
+  {
+    // Make the ROS image for publishing
+    ros_image_.header.frame_id = camera_frame_;
+    ros_image_.width = static_cast<uint32_t>(image_width);
+    ros_image_.height = static_cast<uint32_t>(image_height);
+    ros_image_.encoding = "bgra8";
+    ros_image_.is_bigendian = false;
+    ros_image_.step = static_cast<uint32_t>(image_step);
+    ros_image_.data.clear();
+    ros_image_.data.resize(ros_image_.step * ros_image_.height, 0x00);
+  }
+
+  void ConvertedVideoFrameCallback(IDeckLinkVideoFrame& video_frame)
+  {
+    uint8_t* frame_buffer = nullptr;
+    const auto get_bytes_result
+        = video_frame.GetBytes(reinterpret_cast<void**>(&frame_buffer));
+    if (get_bytes_result == S_OK && frame_buffer != nullptr)
+    {
+      ros_image_.header.stamp = ros::Time::now();
+      std::memcpy(ros_image_.data.data(), frame_buffer, ros_image_.data.size());
+      camera_pub_.publish(ros_image_);
+    }
+    else
+    {
+      throw std::runtime_error("Failed to get frame bytes");
+    }
+  }
+
+  ros::NodeHandle nh_;
+  image_transport::ImageTransport it_;
+  image_transport::Publisher camera_pub_;
+  std::string camera_frame_;
+  sensor_msgs::Image ros_image_;
+
+  std::unique_ptr<DeckLinkDevice> decklink_device_;
+};
+
 using DeckLinkIteratorHandle = BMDHandle<IDeckLinkIterator>;
 
 int DoMain()
@@ -68,7 +192,7 @@ int DoMain()
     ROS_INFO_NAMED(
         ros::this_node::getName(), "Selecting DeckLink device [%d]",
         decklink_device_index);
-    DeckLinkDevice capture_device(
+    RosDeckLinkDeviceWrapper capture_device(
         nh, camera_topic, camera_frame,
         std::move(decklink_devices.at(decklink_device_index)));
 

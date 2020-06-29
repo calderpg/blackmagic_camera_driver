@@ -10,8 +10,6 @@
 #include <thread>
 
 #include <blackmagic_camera_driver/bmd_handle.hpp>
-#include <image_transport/image_transport.h>
-#include <ros/ros.h>
 
 #include "DeckLinkAPI_v10_11.h"
 
@@ -43,9 +41,7 @@ HRESULT FrameReceivedCallback::VideoInputFormatChanged(
   }
   else
   {
-    ROS_WARN_NAMED(
-        ros::this_node::getName(),
-        "Null new display mode received, discarding");
+    parent_device_->LogWarn("Null new display mode received, discarding");
     return S_OK;
   }
 }
@@ -61,14 +57,14 @@ HRESULT FrameReceivedCallback::VideoInputFrameArrived(
   }
   else if (video_frame == nullptr)
   {
-    ROS_WARN_NAMED(
-        ros::this_node::getName(), "Null frame received, discarding");
+    parent_device_->LogWarn("Null frame received, discarding");
   }
   else
   {
-    ROS_WARN_THROTTLE_NAMED(
-        10, ros::this_node::getName(), "Invalid frame received with flags: %lu",
-        video_frame->GetFlags());
+    parent_device_->LogWarn(
+        "Invalid frame received with flags: "
+        + std::to_string(video_frame->GetFlags()),
+        true);
   }
   return S_OK;
 }
@@ -82,8 +78,7 @@ HRESULT FrameOutputCallback::ScheduledFrameCompleted(
   }
   else
   {
-    ROS_WARN_NAMED(
-        ros::this_node::getName(), "Null frame completed, discarding");
+    parent_device_->LogWarn("Null frame completed, discarding");
   }
   return S_OK;
 }
@@ -94,13 +89,18 @@ HRESULT FrameOutputCallback::ScheduledPlaybackHasStopped()
 }
 
 DeckLinkDevice::DeckLinkDevice(
-    const ros::NodeHandle& nh, const std::string& camera_topic,
-    const std::string& camera_frame, DeckLinkHandle device)
-    : nh_(nh), it_(nh_), camera_frame_(camera_frame), device_(std::move(device))
+    const LoggingFunction& logging_fn,
+    const VideoFrameSizeChangedCallbackFunction&
+        video_frame_size_changed_callback_fn,
+    const ConvertedVideoFrameCallbackFunction&
+        converted_video_frame_callback_fn,
+    DeckLinkHandle device)
+    : logging_fn_(logging_fn),
+      video_frame_size_changed_callback_fn_(
+          video_frame_size_changed_callback_fn),
+      converted_video_frame_callback_fn_(converted_video_frame_callback_fn),
+      device_(std::move(device))
 {
-  // Make the image publisher
-  camera_pub_ = it_.advertise(camera_topic, 1, false);
-
   // Get the attributes interface
   IDeckLinkProfileAttributes* attributes_interface_ptr = nullptr;
   const auto get_attributes_result = device_->QueryInterface(
@@ -125,13 +125,11 @@ DeckLinkDevice::DeckLinkDevice(
   {
     if (supports_input_format_detection)
     {
-      ROS_INFO_NAMED(
-          ros::this_node::getName(), "Input format detection is supported");
+      LogInfo("Input format detection is supported");
     }
     else
     {
-      ROS_WARN_NAMED(
-          ros::this_node::getName(), "Input format detection in NOT supported");
+      LogWarn("Input format detection is NOT supported");
     }
   }
   else
@@ -200,10 +198,10 @@ DeckLinkDevice::DeckLinkDevice(
       &output_frame_duration_, &output_frame_timescale_);
   if (get_framerate_result == S_OK)
   {
-    ROS_INFO_NAMED(
-        ros::this_node::getName(),
-        "Output framerate: %ld (frame duration) %ld (timescale)",
-        output_frame_duration_, output_frame_timescale_);
+    LogInfo(
+        "Output framerate: " + std::to_string(output_frame_duration_)
+        + " (frame duration) " + std::to_string(output_frame_timescale_)
+        + " (timescale)");
   }
   else
   {
@@ -498,15 +496,7 @@ void DeckLinkDevice::SetupConversionAndPublishingFrames(
         "Failed to create video frame for pixel format conversion");
   }
 
-  // Make the ROS image for publishing
-  ros_image_.header.frame_id = camera_frame_;
-  ros_image_.width = static_cast<uint32_t>(image_width);
-  ros_image_.height = static_cast<uint32_t>(image_height);
-  ros_image_.encoding = "bgra8";
-  ros_image_.is_bigendian = false;
-  ros_image_.step = static_cast<uint32_t>(image_step);
-  ros_image_.data.clear();
-  ros_image_.data.resize(ros_image_.step * ros_image_.height, 0x00);
+  video_frame_size_changed_callback_fn_(image_width, image_height, image_step);
 }
 
 HRESULT DeckLinkDevice::InputFormatChangedCallback(
@@ -517,33 +507,27 @@ HRESULT DeckLinkDevice::InputFormatChangedCallback(
   // What kind of notification is it?
   if (notification_events & bmdVideoInputDisplayModeChanged)
   {
-    ROS_INFO_NAMED(
-        ros::this_node::getName(),
-        "InputFormatChangedCallback -> bmdVideoInputDisplayModeChanged");
+    LogInfo("InputFormatChangedCallback -> bmdVideoInputDisplayModeChanged");
   }
   if (notification_events & bmdVideoInputFieldDominanceChanged)
   {
-    ROS_INFO_NAMED(
-        ros::this_node::getName(),
-        "InputFormatChangedCallback -> bmdVideoInputFieldDominanceChanged");
+    LogInfo("InputFormatChangedCallback -> bmdVideoInputFieldDominanceChanged");
   }
   if (notification_events & bmdVideoInputColorspaceChanged)
   {
-    ROS_INFO_NAMED(
-        ros::this_node::getName(),
-        "InputFormatChangedCallback -> bmdVideoInputColorspaceChanged");
+    LogInfo("InputFormatChangedCallback -> bmdVideoInputColorspaceChanged");
   }
 
   // What pixel format does it have?
   BMDPixelFormat pixel_format = bmdFormatUnspecified;
   if (detected_signal_flags == bmdDetectedVideoInputYCbCr422)
   {
-    ROS_INFO_NAMED(ros::this_node::getName(), "Detected signal is YCbCr422");
+    LogInfo("Detected signal is YCbCr422");
     pixel_format = bmdFormat10BitYUV;
   }
   else if (detected_signal_flags == bmdDetectedVideoInputRGB444)
   {
-    ROS_INFO_NAMED(ros::this_node::getName(), "Detected signal is RGB444");
+    LogInfo("Detected signal is RGB444");
     pixel_format = bmdFormat10BitRGB;
   }
   else if (detected_signal_flags == bmdDetectedVideoInputDualStream3D)
@@ -556,9 +540,9 @@ HRESULT DeckLinkDevice::InputFormatChangedCallback(
       const_cast<IDeckLinkDisplayMode&>(new_display_mode).GetWidth());
   const int32_t height = static_cast<int32_t>(
       const_cast<IDeckLinkDisplayMode&>(new_display_mode).GetHeight());
-  ROS_INFO_NAMED(
-      ros::this_node::getName(), "New display mode is %d (width) x %d (height)",
-      width, height);
+  LogInfo(
+      "New display mode is " + std::to_string(width) + " (width) x "
+      + std::to_string(height) + " (height)");
 
   // What is the display mode (resolution + framerate)?
   const BMDDisplayMode display_mode
@@ -585,9 +569,8 @@ HRESULT DeckLinkDevice::ScheduleNextFrame(IDeckLinkVideoFrame& video_frame)
   }
   else
   {
-    ROS_ERROR_NAMED(
-        ros::this_node::getName(),
-        "Failed to schedule video frame: %d", scheduled_result);
+    LogError(
+        "Failed to schedule video frame: " + std::to_string(scheduled_result));
   }
   return scheduled_result;
 }
@@ -648,20 +631,9 @@ void DeckLinkDevice::LogVideoFrameAncillaryPackets(
 
   if (received_packets.size() > 0)
   {
-    if (log_debug)
-    {
-      ROS_DEBUG_NAMED(
-          ros::this_node::getName(),
-          "[%s] Video frame contains %zu SDI ancillary packets", msg.c_str(),
-          received_packets.size());
-    }
-    else
-    {
-      ROS_INFO_NAMED(
-        ros::this_node::getName(),
-        "[%s] Video frame contains %zu SDI ancillary packets", msg.c_str(),
-        received_packets.size());
-    }
+    std::string log_string =
+        "[" + msg + "] Video frame contains "
+        + std::to_string(received_packets.size()) + " SDI ancillary packets:";
 
     for (size_t idx = 0; idx < received_packets.size(); idx++)
     {
@@ -691,26 +663,19 @@ void DeckLinkDevice::LogVideoFrameAncillaryPackets(
         data_str = "non-uint8_t packet data";
       }
 
-      if (log_debug)
-      {
-        ROS_DEBUG_NAMED(
-            ros::this_node::getName(),
-            "[%s] Ancillary packet [%zu] has DID 0x%hhx, SDID 0x%hhx, VANC line"
-            " %u, data stream index 0x%hhx, and data: [%s]",
-            msg.c_str(), idx, packet->GetDID(), packet->GetSDID(),
-            packet->GetLineNumber(), packet->GetDataStreamIndex(),
-            data_str.c_str());
-      }
-      else
-      {
-        ROS_INFO_NAMED(
-            ros::this_node::getName(),
-            "[%s] Ancillary packet [%zu] has DID 0x%hhx, SDID 0x%hhx, VANC line"
-            " %u, data stream index 0x%hhx, and data: [%s]",
-            msg.c_str(), idx, packet->GetDID(), packet->GetSDID(),
-            packet->GetLineNumber(), packet->GetDataStreamIndex(),
-            data_str.c_str());
-      }
+      log_string +=
+          "\nAncillary packet [" + std::to_string(idx) + "] has DID 0x"
+          + HexPrint(packet->GetDID()) + ", SDID 0x"
+          + HexPrint(packet->GetSDID()) + ", VANC line "
+          + std::to_string(packet->GetLineNumber()) + ", data stream index 0x"
+          + HexPrint(packet->GetDataStreamIndex()) + ", and data: [" + data_str
+          + "]";
+    }
+
+    if (log_debug) {
+      LogDebug(log_string);
+    } else {
+      LogInfo(log_string);
     }
   }
 }
@@ -725,20 +690,7 @@ HRESULT DeckLinkDevice::FrameCallback(
       conversion_frame_.get());
   if (convert_frame_result == S_OK)
   {
-    uint8_t* frame_buffer = nullptr;
-    const auto get_bytes_result
-        = conversion_frame_->GetBytes(reinterpret_cast<void**>(&frame_buffer));
-    if (get_bytes_result == S_OK && frame_buffer != nullptr)
-    {
-      ros_image_.header.stamp = ros::Time::now();
-      std::memcpy(ros_image_.data.data(), frame_buffer, ros_image_.data.size());
-      camera_pub_.publish(ros_image_);
-    }
-    else
-    {
-      throw std::runtime_error("Failed to get frame bytes");
-    }
-
+    converted_video_frame_callback_fn_(*conversion_frame_);
     LogVideoFrameAncillaryPackets(video_frame, "FrameCallback", false);
   }
   else
@@ -762,13 +714,12 @@ HRESULT DeckLinkDevice::ScheduledFrameCallback(
   BlackmagicSDICameraControlPacketHandle control_packet;
   {
     std::lock_guard<std::mutex> lock(camera_command_queue_lock_);
-    const size_t pending_commands = camera_command_queue_.size();
-    if (pending_commands > 0)
+    const size_t num_pending_commands = camera_command_queue_.size();
+    if (num_pending_commands > 0)
     {
-      ROS_INFO_NAMED(
-          ros::this_node::getName(),
-          "%zu SDI command(s) pending, sending command frame",
-          pending_commands);
+      LogInfo(
+          std::to_string(num_pending_commands)
+          + " SDI command(s) pending, sending command frame");
 
       control_packet = BlackmagicSDICameraControlPacketHandle(
           new BlackmagicSDICameraControlPacket());
@@ -788,10 +739,11 @@ HRESULT DeckLinkDevice::ScheduledFrameCallback(
         }
       }
 
-      ROS_INFO_NAMED(
-          ros::this_node::getName(),
-          "Assembled SDI command packet with %zu of %zu pending command(s)",
-          pending_commands - camera_command_queue_.size(), pending_commands);
+      LogInfo(
+          "Assembled SDI command packet with "
+          + std::to_string(num_pending_commands - camera_command_queue_.size())
+          + " of " + std::to_string(num_pending_commands)
+          + " pending command(s)");
     }
   }
 
