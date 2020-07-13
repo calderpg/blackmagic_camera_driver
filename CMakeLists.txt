@@ -52,6 +52,7 @@ add_library(decklink
             decklink_sdk/DeckLinkAPIVideoInput_v10_11.h
             decklink_sdk/DeckLinkAPIVideoOutput_v10_11.h
             decklink_sdk/LinuxCOM.h)
+set_target_properties(decklink PROPERTIES COMPILE_FLAGS "-Wno-multichar")
 
 include_directories(include SYSTEM decklink_sdk
                             ${catkin_INCLUDE_DIRS}
@@ -78,17 +79,27 @@ set(CMAKE_EXE_LINKER_FLAGS
 set(CMAKE_SHARED_LINKER_FLAGS
     "${CMAKE_SHARED_LINKER_FLAGS} ${OpenMP_SHARED_LINKER_FLAGS}")
 
+add_library(${PROJECT_NAME}
+            include/${PROJECT_NAME}/bmd_handle.hpp
+            include/${PROJECT_NAME}/decklink_interface.hpp
+            src/${PROJECT_NAME}/decklink_interface.cpp)
+add_dependencies(${PROJECT_NAME} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(${PROJECT_NAME} decklink)
+
 add_executable(blackmagic_camera_driver_node
-               include/${PROJECT_NAME}/bmd_handle.hpp
-               include/${PROJECT_NAME}/decklink_interface.hpp
-               src/${PROJECT_NAME}/decklink_interface.cpp
                src/blackmagic_camera_driver_node.cpp)
 add_dependencies(blackmagic_camera_driver_node ${catkin_EXPORTED_TARGETS})
 target_link_libraries(blackmagic_camera_driver_node
-                      ${catkin_LIBRARIES} decklink)
+                      ${PROJECT_NAME} ${catkin_LIBRARIES})
 
-install(TARGETS decklink blackmagic_camera_driver_node
+install(TARGETS decklink ${PROJECT_NAME} blackmagic_camera_driver_node
     ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
     LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
     RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+## Mark cpp header files for installation
+install(DIRECTORY include/${PROJECT_NAME}/
+    DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
+    FILES_MATCHING PATTERN "*.hpp"
+    PATTERN ".svn" EXCLUDE
 )
