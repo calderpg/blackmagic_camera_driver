@@ -184,20 +184,16 @@ int DoMain()
         break;
       }
     }
-    ROS_INFO_NAMED(
-        ros::this_node::getName(),"Found [%zu] DeckLink device(s)",
-        decklink_devices.size());
+    ROS_INFO("Found [%zu] DeckLink device(s)", decklink_devices.size());
 
     // Get the selected device
-    ROS_INFO_NAMED(
-        ros::this_node::getName(), "Selecting DeckLink device [%d]",
-        decklink_device_index);
+    ROS_INFO("Selecting DeckLink device [%d]", decklink_device_index);
     RosDeckLinkDeviceWrapper capture_device(
         nh, camera_topic, camera_frame,
         std::move(decklink_devices.at(decklink_device_index)));
 
     // Start capture
-    ROS_INFO_NAMED(ros::this_node::getName(), "Starting capture...");
+    ROS_INFO("Starting capture...");
     capture_device.StartVideoCapture();
 
     // const uint16_t set_focus = ConvertToFixed16(0.5);
@@ -274,17 +270,15 @@ int DoMain()
     std::this_thread::sleep_for(std::chrono::seconds(1));
 
     // Stop capture
-    ROS_INFO_NAMED(ros::this_node::getName(), "Stopping capture...");
+    ROS_INFO("Stopping capture...");
     capture_device.StopVideoCapture();
 
     // Let RAII clean everything else
-    ROS_INFO_NAMED(ros::this_node::getName(), "...capture complete");
+    ROS_INFO("...capture complete");
   }
   else
   {
-    ROS_ERROR_NAMED(
-        ros::this_node::getName(),
-        "Failed to create DeckLinkIterator instance");
+    ROS_ERROR("Failed to create DeckLinkIterator instance");
   }
   return 0;
 }
