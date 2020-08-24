@@ -810,4 +810,29 @@ HRESULT DeckLinkDevice::ScheduledFrameCallback(
   }
   return ScheduleNextFrame(*command_output_frame_);
 }
+
+std::vector<DeckLinkHandle> GetDeckLinkDevices()
+{
+  // Find available DeckLink devices
+  std::vector<DeckLinkHandle> decklink_devices;
+
+  DeckLinkIteratorHandle device_iterator(CreateDeckLinkIteratorInstance());
+  if (device_iterator)
+  {
+    while (true)
+    {
+      IDeckLink* decklink_device_ptr = nullptr;
+      if (device_iterator->Next(&decklink_device_ptr) == S_OK)
+      {
+        decklink_devices.emplace_back(decklink_device_ptr);
+      }
+      else
+      {
+        break;
+      }
+    }
+  }
+
+  return decklink_devices;
+}
 }  // namespace blackmagic_camera_driver

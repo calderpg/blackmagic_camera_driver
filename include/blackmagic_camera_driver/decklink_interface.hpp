@@ -17,6 +17,7 @@
 
 namespace blackmagic_camera_driver
 {
+using DeckLinkIteratorHandle = BMDHandle<IDeckLinkIterator>;
 using DeckLinkHandle = BMDHandle<IDeckLink>;
 using DeckLinkInputHandle = BMDHandle<IDeckLinkInput>;
 using DeckLinkOutputHandle = BMDHandle<IDeckLinkOutput>;
@@ -671,4 +672,6 @@ private:
   DeckLinkMutableVideoFrameHandle reference_output_frame_;
   DeckLinkMutableVideoFrameHandle command_output_frame_;
 };
+
+std::vector<DeckLinkHandle> GetDeckLinkDevices();
 }  // namespace blackmagic_camera_driver
