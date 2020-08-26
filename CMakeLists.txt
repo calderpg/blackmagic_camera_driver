@@ -33,12 +33,14 @@ add_library(decklink
             decklink_sdk/DeckLinkAPI.h
             decklink_sdk/DeckLinkAPIModes.h
             decklink_sdk/DeckLinkAPITypes.h
-            decklink_sdk/DeckLinkAPI_v10_11.h
+            #decklink_sdk/DeckLinkAPI_v10_11.h
             #decklink_sdk/DeckLinkAPI_v10_2.h
             #decklink_sdk/DeckLinkAPI_v10_4.h
             #decklink_sdk/DeckLinkAPI_v10_5.h
             #decklink_sdk/DeckLinkAPI_v10_6.h
             #decklink_sdk/DeckLinkAPI_v10_9.h
+            decklink_sdk/DeckLinkAPI_v11_5_1.h
+            #decklink_sdk/DeckLinkAPI_v11_5.h
             #decklink_sdk/DeckLinkAPI_v7_1.h
             #decklink_sdk/DeckLinkAPI_v7_3.h
             #decklink_sdk/DeckLinkAPI_v7_6.h
@@ -49,8 +51,11 @@ add_library(decklink
             #decklink_sdk/DeckLinkAPI_v9_9.h
             decklink_sdk/DeckLinkAPIVersion.h
             decklink_sdk/DeckLinkAPIVideoEncoderInput_v10_11.h
-            decklink_sdk/DeckLinkAPIVideoInput_v10_11.h
-            decklink_sdk/DeckLinkAPIVideoOutput_v10_11.h
+            #decklink_sdk/DeckLinkAPIVideoInput_v10_11.h
+            #decklink_sdk/DeckLinkAPIVideoInput_v11_4.h
+            decklink_sdk/DeckLinkAPIVideoInput_v11_5_1.h
+            #decklink_sdk/DeckLinkAPIVideoOutput_v10_11.h
+            decklink_sdk/DeckLinkAPIVideoOutput_v11_4.h
             decklink_sdk/LinuxCOM.h)
 set_target_properties(decklink PROPERTIES COMPILE_FLAGS "-Wno-multichar")
 

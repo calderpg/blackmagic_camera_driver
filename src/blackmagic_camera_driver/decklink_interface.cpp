@@ -169,7 +169,8 @@ DeckLinkDevice::DeckLinkDevice(
   const auto get_command_output_format_supported_result
       = output_device_->DoesSupportVideoMode(
           bmdVideoConnectionUnspecified, kOutputDisplayMode,
-          kOutputPixelFormat, bmdSupportedVideoModeDefault, nullptr,
+          kOutputPixelFormat, bmdNoVideoOutputConversion,
+          bmdSupportedVideoModeDefault, nullptr,
           &command_output_format_supported);
   if (get_command_output_format_supported_result == S_OK)
   {
