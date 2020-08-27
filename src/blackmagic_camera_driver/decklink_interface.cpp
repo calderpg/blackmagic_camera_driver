@@ -520,20 +520,100 @@ HRESULT DeckLinkDevice::InputFormatChangedCallback(
   }
 
   // What pixel format does it have?
-  BMDPixelFormat pixel_format = bmdFormatUnspecified;
-  if (detected_signal_flags == bmdDetectedVideoInputYCbCr422)
+  bool is_ycrcb422 = false;
+  bool is_rgb444 = false;
+
+  if (detected_signal_flags & bmdDetectedVideoInputYCbCr422)
   {
     LogInfo("Detected signal is YCbCr422");
-    pixel_format = bmdFormat10BitYUV;
+    is_ycrcb422 = true;
   }
-  else if (detected_signal_flags == bmdDetectedVideoInputRGB444)
+  if (detected_signal_flags & bmdDetectedVideoInputRGB444)
   {
     LogInfo("Detected signal is RGB444");
-    pixel_format = bmdFormat10BitRGB;
+    is_rgb444 = true;
   }
-  else if (detected_signal_flags == bmdDetectedVideoInputDualStream3D)
+
+  if (is_ycrcb422 == is_rgb444)
   {
-    throw std::runtime_error("Detected signal pixel format not recognized");
+    throw std::runtime_error(
+        "Detected signal must be EITHER YCbCr422 OR RGB444");
+  }
+
+  if (detected_signal_flags & bmdDetectedVideoInputDualStream3D)
+  {
+    throw std::runtime_error("Dual-stream 3D is not supported");
+  }
+
+  bool is_8bit = false;
+  bool is_10bit = false;
+  bool is_12bit = false;
+
+  if (detected_signal_flags & bmdDetectedVideoInput8BitDepth)
+  {
+    LogInfo("Detected signal is 8-bit");
+    is_8bit = true;
+  }
+  if (detected_signal_flags & bmdDetectedVideoInput10BitDepth)
+  {
+    LogInfo("Detected signal is 10-bit");
+    is_10bit = true;
+  }
+  if (detected_signal_flags & bmdDetectedVideoInput12BitDepth)
+  {
+    LogInfo("Detected signal is 12-bit");
+    is_12bit = true;
+  }
+
+  if (!((is_8bit && !is_10bit && !is_12bit) ||
+        (!is_8bit && is_10bit && !is_12bit) ||
+        (!is_8bit && !is_10bit && is_12bit)))
+  {
+    throw std::runtime_error(
+        "Detected bit-depth must be EITHER 8 OR 10 OR 12 bits");
+  }
+
+
+  BMDPixelFormat pixel_format = bmdFormatUnspecified;
+  if (is_ycrcb422)
+  {
+    if (is_8bit)
+    {
+      LogInfo("Determined pixel format: bmdFormat8BitYUV");
+      pixel_format = bmdFormat8BitYUV;
+    }
+    else if (is_10bit)
+    {
+      LogInfo("Determined pixel format: bmdFormat10BitYUV");
+      pixel_format = bmdFormat10BitYUV;
+    }
+    else if (is_12bit)
+    {
+      throw std::runtime_error("Cannot combine YCrCb422 with 12-bit depth");
+    }
+  }
+  else if (is_rgb444)
+  {
+    if (is_8bit)
+    {
+      LogInfo("Determined pixel format: bmdFormat8BitBGRA");
+      pixel_format = bmdFormat8BitBGRA;
+    }
+    else if (is_10bit)
+    {
+      LogInfo("Determined pixel format: bmdFormat10BitRGB");
+      pixel_format = bmdFormat10BitRGB;
+    }
+    else if (is_12bit)
+    {
+      LogInfo("Determined pixel format: bmdFormat12BitRGB");
+      pixel_format = bmdFormat12BitRGB;
+    }
+  }
+
+  if (pixel_format == bmdFormatUnspecified)
+  {
+    throw std::runtime_error("Unable to determine pixel format");
   }
 
   // How big is the image format?
