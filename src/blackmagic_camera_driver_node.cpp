@@ -76,12 +76,14 @@ public:
       ConvertedVideoFrameCallback(video_frame);
     };
 
+    // For now, fix the output display mode
+    const BMDDisplayMode output_display_mode = bmdModeHD1080p30;
+
     // Make the device
     decklink_device_ = std::unique_ptr<DeckLinkDevice>(new DeckLinkDevice(
         LoggingFunction(RosLoggingFunction),
-        video_frame_size_changed_callback_fn,
-        converted_video_frame_callback_fn,
-        std::move(device)));
+        video_frame_size_changed_callback_fn, converted_video_frame_callback_fn,
+        output_display_mode, std::move(device)));
   }
 
   void StartVideoCapture() { decklink_device_->StartVideoCapture(); }
@@ -91,6 +93,23 @@ public:
   void EnqueueCameraCommand(const BlackmagicSDICameraControlMessage& command)
   {
     decklink_device_->EnqueueCameraCommand(command);
+  }
+
+  void EnqueueOutputFrame(DeckLinkMutableVideoFrameHandle output_frame)
+  {
+    std::cout << "Enqueueing new output frame..." << std::endl;
+    decklink_device_->EnqueueOutputFrame(std::move(output_frame));
+    std::cout << "...new output frame enqueued" << std::endl;
+  }
+
+  void ClearOutputQueueAndResetOutputToReferenceFrame()
+  {
+    decklink_device_->ClearOutputQueueAndResetOutputToReferenceFrame();
+  }
+
+  DeckLinkMutableVideoFrameHandle CreateBGRA8OutputVideoFrame()
+  {
+    return decklink_device_->CreateBGRA8OutputVideoFrame();
   }
 
 private:
@@ -240,10 +259,53 @@ int DoMain()
 
   std::this_thread::sleep_for(std::chrono::seconds(1));
 
-  // Spin while video callbacks run
+  // Spin while video callbacks run. Once a second, change the output frame.
+  const size_t num_image_pixels = 1920 * 1080;
+  const size_t num_image_bytes = num_image_pixels * 4;
+  const std::vector<uint32_t> red_color(0xffff0000, num_image_pixels);
+  const std::vector<uint32_t> green_color(0xff00ff00, num_image_pixels);
+  const std::vector<uint32_t> blue_color(0xff0000ff, num_image_pixels);
+
+  int32_t tick = 0;
   ros::Rate spin_rate(30.0);
   while (ros::ok())
   {
+    // tick++;
+
+    const void* image_data_ptr = nullptr;
+    if (tick == 30)
+    {
+      image_data_ptr = red_color.data();
+      std::cout << "Setting output frame to red" << std::endl;
+    }
+    else if (tick == 60)
+    {
+      image_data_ptr = green_color.data();
+      std::cout << "Setting output frame to green" << std::endl;
+    }
+    else if (tick == 90)
+    {
+      image_data_ptr = blue_color.data();
+      std::cout << "Setting output frame to blue" << std::endl;
+      tick = 0;
+    }
+
+    if (image_data_ptr != nullptr)
+    {
+      std::cout << "Creating output frame" << std::endl;
+      auto output_frame = capture_device.CreateBGRA8OutputVideoFrame();
+      uint8_t* output_frame_buffer = nullptr;
+      const auto get_output_bytes_result = output_frame->GetBytes(
+          reinterpret_cast<void**>(&output_frame_buffer));
+      if (get_output_bytes_result != S_OK || output_frame_buffer == nullptr)
+      {
+        throw std::runtime_error("Failed to get output frame bytes");
+      }
+      std::memcpy(output_frame_buffer, image_data_ptr, num_image_bytes);
+
+      capture_device.EnqueueOutputFrame(std::move(output_frame));
+    }
+
     ros::spinOnce();
     spin_rate.sleep();
   }

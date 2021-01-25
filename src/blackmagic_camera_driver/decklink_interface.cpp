@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <mutex>
 #include <stdexcept>
@@ -22,12 +23,49 @@ const BMDDisplayMode kDefaultInputDisplayMode = bmdModeHD1080p30;
 const BMDPixelFormat kDefaultInputPixelFormat = bmdFormat8BitYUV;
 
 // Output video format, used to send VANC commands.
-const BMDDisplayMode kOutputDisplayMode = bmdModeHD1080p30;
 // Undocumented, but it looks like output must be v210 YUV for VANC data to be
 // encoded into frames properly.
 const BMDPixelFormat kOutputPixelFormat = bmdFormat10BitYUV;
-// TODO(calderpg) Compute this number from frame width instead.
-const int32_t kOutputFrameRowSize = 5120;
+
+void CopyVideoFrameBytes(
+    const IDeckLinkVideoFrame& source_frame,
+    IDeckLinkMutableVideoFrame& destination_frame)
+{
+  IDeckLinkVideoFrame& raw_source_frame
+      = const_cast<IDeckLinkVideoFrame&>(source_frame);
+
+  uint8_t* source_frame_buffer = nullptr;
+  const auto get_source_bytes_result = raw_source_frame.GetBytes(
+      reinterpret_cast<void**>(&source_frame_buffer));
+  if (get_source_bytes_result != S_OK || source_frame_buffer == nullptr)
+  {
+    throw std::runtime_error("Failed to get source frame bytes");
+  }
+
+  const size_t source_frame_bytes
+      = raw_source_frame.GetRowBytes() * raw_source_frame.GetHeight();
+
+  uint8_t* destination_frame_buffer = nullptr;
+  const auto get_destination_bytes_result = destination_frame.GetBytes(
+      reinterpret_cast<void**>(&destination_frame_buffer));
+  if (get_destination_bytes_result != S_OK
+      || destination_frame_buffer == nullptr)
+  {
+    throw std::runtime_error("Failed to get destination frame bytes");
+  }
+
+  const size_t destination_frame_bytes
+      = destination_frame.GetRowBytes() * destination_frame.GetHeight();
+
+  if (source_frame_bytes != destination_frame_bytes)
+  {
+    throw std::runtime_error(
+        "Source and destination frames are different sizes");
+  }
+
+  std::memcpy(
+      destination_frame_buffer, source_frame_buffer, destination_frame_bytes);
+}
 
 HRESULT FrameReceivedCallback::VideoInputFormatChanged(
     BMDVideoInputFormatChangedEvents notification_events,
@@ -94,12 +132,12 @@ DeckLinkDevice::DeckLinkDevice(
         video_frame_size_changed_callback_fn,
     const ConvertedVideoFrameCallbackFunction&
         converted_video_frame_callback_fn,
-    DeckLinkHandle device)
+    const BMDDisplayMode output_display_mode, DeckLinkHandle device)
     : logging_fn_(logging_fn),
       video_frame_size_changed_callback_fn_(
           video_frame_size_changed_callback_fn),
       converted_video_frame_callback_fn_(converted_video_frame_callback_fn),
-      device_(std::move(device))
+      output_display_mode_(output_display_mode), device_(std::move(device))
 {
   // Get the attributes interface
   IDeckLinkProfileAttributes* attributes_interface_ptr = nullptr;
@@ -168,7 +206,7 @@ DeckLinkDevice::DeckLinkDevice(
   bool command_output_format_supported = false;
   const auto get_command_output_format_supported_result
       = output_device_->DoesSupportVideoMode(
-          bmdVideoConnectionUnspecified, kOutputDisplayMode,
+          bmdVideoConnectionUnspecified, output_display_mode_,
           kOutputPixelFormat, bmdNoVideoOutputConversion,
           bmdSupportedVideoModeDefault, nullptr,
           &command_output_format_supported);
@@ -188,14 +226,14 @@ DeckLinkDevice::DeckLinkDevice(
   // Get output display format information
   IDeckLinkDisplayMode* output_display_mode_ptr = nullptr;
   const auto get_display_mode_result = output_device_->GetDisplayMode(
-      kOutputDisplayMode, &output_display_mode_ptr);
+      output_display_mode_, &output_display_mode_ptr);
   if (get_display_mode_result != S_OK)
   {
     throw std::runtime_error("Failed to get output display mode");
   }
-  DeckLinkDisplayModeHandle output_display_mode(output_display_mode_ptr);
+  DeckLinkDisplayModeHandle real_output_display_mode(output_display_mode_ptr);
 
-  const auto get_framerate_result = output_display_mode->GetFrameRate(
+  const auto get_framerate_result = real_output_display_mode->GetFrameRate(
       &output_frame_duration_, &output_frame_timescale_);
   if (get_framerate_result == S_OK)
   {
@@ -209,12 +247,15 @@ DeckLinkDevice::DeckLinkDevice(
     throw std::runtime_error("Failed to get output framerate");
   }
 
+  const int32_t output_frame_row_bytes = Calc10BitYUVRowBytes(
+      static_cast<int32_t>(real_output_display_mode->GetWidth()));
+
   // Create a frame for reference output
   IDeckLinkMutableVideoFrame* reference_output_frame_ptr = nullptr;
   const auto create_reference_frame_result = output_device_->CreateVideoFrame(
-      static_cast<int32_t>(output_display_mode->GetWidth()),
-      static_cast<int32_t>(output_display_mode->GetHeight()),
-      kOutputFrameRowSize, kOutputPixelFormat, bmdFrameFlagDefault,
+      static_cast<int32_t>(real_output_display_mode->GetWidth()),
+      static_cast<int32_t>(real_output_display_mode->GetHeight()),
+      output_frame_row_bytes, kOutputPixelFormat, bmdFrameFlagDefault,
       &reference_output_frame_ptr);
   if (create_reference_frame_result == S_OK
       && reference_output_frame_ptr != nullptr)
@@ -231,9 +272,9 @@ DeckLinkDevice::DeckLinkDevice(
   // Create a frame for output commands
   IDeckLinkMutableVideoFrame* command_output_frame_ptr = nullptr;
   const auto create_command_frame_result = output_device_->CreateVideoFrame(
-      static_cast<int32_t>(output_display_mode->GetWidth()),
-      static_cast<int32_t>(output_display_mode->GetHeight()),
-      kOutputFrameRowSize, kOutputPixelFormat, bmdFrameFlagDefault,
+      static_cast<int32_t>(real_output_display_mode->GetWidth()),
+      static_cast<int32_t>(real_output_display_mode->GetHeight()),
+      output_frame_row_bytes, kOutputPixelFormat, bmdFrameFlagDefault,
       &command_output_frame_ptr);
   if (create_command_frame_result == S_OK
       && command_output_frame_ptr != nullptr)
@@ -247,6 +288,26 @@ DeckLinkDevice::DeckLinkDevice(
         "Failed to create video frame for command output");
   }
 
+  // Create a frame for output conversion
+  IDeckLinkMutableVideoFrame* output_conversion_frame_ptr = nullptr;
+  const auto create_output_conversion_frame_result
+      = output_device_->CreateVideoFrame(
+          static_cast<int32_t>(real_output_display_mode->GetWidth()),
+          static_cast<int32_t>(real_output_display_mode->GetHeight()),
+          output_frame_row_bytes, kOutputPixelFormat, bmdFrameFlagDefault,
+          &output_conversion_frame_ptr);
+  if (create_output_conversion_frame_result == S_OK
+      && output_conversion_frame_ptr != nullptr)
+  {
+    output_conversion_frame_
+        = DeckLinkMutableVideoFrameHandle(output_conversion_frame_ptr);
+  }
+  else
+  {
+    throw std::runtime_error(
+        "Failed to create video frame for output conversion");
+  }
+
   // Fill the output frame with cyan pixels
   uint32_t* reference_frame_buffer = nullptr;
   const auto get_reference_bytes_result
@@ -257,8 +318,9 @@ DeckLinkDevice::DeckLinkDevice(
     const std::vector<uint32_t> cyan_yuv_pixels
         = { 0x040aa298, 0x2a8a62a8, 0x298aa040, 0x2a8102a8};
     const size_t num_words
-        = (kOutputFrameRowSize * output_display_mode->GetHeight())
-            / sizeof(uint32_t);
+        = (reference_output_frame_->GetRowBytes()
+              * reference_output_frame_->GetHeight())
+          / sizeof(uint32_t);
     for (size_t word = 0; word < num_words; word += 4)
     {
       reference_frame_buffer[word + 0] = cyan_yuv_pixels.at(0);
@@ -272,30 +334,9 @@ DeckLinkDevice::DeckLinkDevice(
     throw std::runtime_error("Failed to get reference output frame bytes");
   }
 
-  // Fill the command frame with cyan pixels
-  uint32_t* command_frame_buffer = nullptr;
-  const auto get_command_bytes_result
-      = command_output_frame_->GetBytes(
-          reinterpret_cast<void**>(&command_frame_buffer));
-  if (get_command_bytes_result == S_OK && command_frame_buffer != nullptr)
-  {
-    const std::vector<uint32_t> cyan_yuv_pixels
-        = { 0x040aa298, 0x2a8a62a8, 0x298aa040, 0x2a8102a8};
-    const size_t num_words
-        = (kOutputFrameRowSize * output_display_mode->GetHeight())
-            / sizeof(uint32_t);
-    for (size_t word = 0; word < num_words; word += 4)
-    {
-      command_frame_buffer[word + 0] = cyan_yuv_pixels.at(0);
-      command_frame_buffer[word + 1] = cyan_yuv_pixels.at(1);
-      command_frame_buffer[word + 2] = cyan_yuv_pixels.at(2);
-      command_frame_buffer[word + 3] = cyan_yuv_pixels.at(3);
-    }
-  }
-  else
-  {
-    throw std::runtime_error("Failed to get command output frame bytes");
-  }
+  // Initialize the command and conversion frames from the reference frame
+  CopyVideoFrameBytes(*reference_output_frame_, *command_output_frame_);
+  CopyVideoFrameBytes(*reference_output_frame_, *output_conversion_frame_);
 
   // Create the input callback
   input_callback_
@@ -322,12 +363,18 @@ DeckLinkDevice::DeckLinkDevice(
     throw std::runtime_error("Failed to set output callback");
   }
 
-  // Make the video converter
-  video_converter_
+  // Make the video converters
+  input_video_converter_
       = DeckLinkVideoConversionHandle(CreateVideoConversionInstance());
-  if (!video_converter_)
+  if (!input_video_converter_)
   {
-    throw std::runtime_error("Failed to create video converter");
+    throw std::runtime_error("Failed to create input video converter");
+  }
+  output_video_converter_
+      = DeckLinkVideoConversionHandle(CreateVideoConversionInstance());
+  if (!output_video_converter_)
+  {
+    throw std::runtime_error("Failed to create output video converter");
   }
 
   // We have to setup the conversion frames with defaults, since we will not get
@@ -339,7 +386,7 @@ DeckLinkDevice::DeckLinkDevice(
 void DeckLinkDevice::StartVideoCapture()
 {
   EnableVideoInput(kDefaultInputDisplayMode, kDefaultInputPixelFormat);
-  EnableVideoOutput(kOutputDisplayMode);
+  EnableVideoOutput(output_display_mode_);
   // Blackmagic's examples all schedule 3 frames before starting scheduled
   // playback.
   for (int32_t i = 0; i < 3; i++)
@@ -370,6 +417,65 @@ void DeckLinkDevice::EnqueueCameraCommand(
 {
   std::lock_guard<std::mutex> lock(camera_command_queue_lock_);
   camera_command_queue_.push_back(command);
+}
+
+void DeckLinkDevice::EnqueueOutputFrame(
+    DeckLinkMutableVideoFrameHandle output_frame)
+{
+  const auto reference_width = reference_output_frame_->GetWidth();
+  const auto reference_height = reference_output_frame_->GetHeight();
+  const auto output_width = output_frame->GetWidth();
+  const auto output_height = output_frame->GetHeight();
+
+  if (reference_width != output_width)
+  {
+    throw std::runtime_error("Output frame width does not match");
+  }
+  if (reference_height != output_height)
+  {
+    throw std::runtime_error("Output frame height does not match");
+  }
+
+  std::lock_guard<std::mutex> lock(output_frame_queue_lock_);
+  output_frame_queue_.push_back(std::move(output_frame));
+}
+
+void DeckLinkDevice::ClearOutputQueueAndResetOutputToReferenceFrame()
+{
+  // Clear output frame queue
+  {
+    std::lock_guard<std::mutex> lock(output_frame_queue_lock_);
+    output_frame_queue_.clear();
+  }
+  // Reset conversion frame
+  {
+    std::lock_guard<std::mutex> lock(output_conversion_frame_lock_);
+    CopyVideoFrameBytes(*reference_output_frame_, *output_conversion_frame_);
+  }
+}
+
+DeckLinkMutableVideoFrameHandle DeckLinkDevice::CreateBGRA8OutputVideoFrame()
+{
+  const int32_t image_width
+      = static_cast<int32_t>(reference_output_frame_->GetWidth());
+  const int32_t image_height
+      = static_cast<int32_t>(reference_output_frame_->GetHeight());
+
+  // bgra8 is 4 bytes/pixel
+  const int32_t image_step = image_width * 4;
+
+  IDeckLinkMutableVideoFrame* output_video_frame_ptr = nullptr;
+  const auto create_video_frame_result = output_device_->CreateVideoFrame(
+      image_width, image_height, image_step, bmdFormat8BitBGRA,
+      bmdFrameFlagDefault, &output_video_frame_ptr);
+  if (create_video_frame_result == S_OK && output_video_frame_ptr != nullptr)
+  {
+    return DeckLinkMutableVideoFrameHandle(output_video_frame_ptr);
+  }
+  else
+  {
+    throw std::runtime_error("Failed to create output video frame");
+  }
 }
 
 void DeckLinkDevice::RestartCapture(
@@ -481,15 +587,15 @@ void DeckLinkDevice::SetupConversionAndPublishingFrames(
   const int32_t image_step = image_width * 4;
 
   // Make the video frame for conversion
-  IDeckLinkMutableVideoFrame* conversion_video_frame_ptr = nullptr;
+  IDeckLinkMutableVideoFrame* input_conversion_video_frame_ptr = nullptr;
   const auto create_video_frame_result = output_device_->CreateVideoFrame(
       image_width, image_height, image_step, bmdFormat8BitBGRA,
-      bmdFrameFlagDefault, &conversion_video_frame_ptr);
+      bmdFrameFlagDefault, &input_conversion_video_frame_ptr);
   if (create_video_frame_result == S_OK
-      && conversion_video_frame_ptr != nullptr)
+      && input_conversion_video_frame_ptr != nullptr)
   {
-    conversion_frame_
-        = DeckLinkMutableVideoFrameHandle(conversion_video_frame_ptr);
+    input_conversion_frame_
+        = DeckLinkMutableVideoFrameHandle(input_conversion_video_frame_ptr);
   }
   else
   {
@@ -766,17 +872,17 @@ HRESULT DeckLinkDevice::FrameCallback(
     const IDeckLinkAudioInputPacket& audio_packet)
 {
   (void)(audio_packet);
-  const auto convert_frame_result = video_converter_->ConvertFrame(
+  const auto convert_frame_result = input_video_converter_->ConvertFrame(
       const_cast<IDeckLinkVideoInputFrame*>(&video_frame),
-      conversion_frame_.get());
+      input_conversion_frame_.get());
   if (convert_frame_result == S_OK)
   {
-    converted_video_frame_callback_fn_(*conversion_frame_);
+    converted_video_frame_callback_fn_(*input_conversion_frame_);
     LogVideoFrameAncillaryPackets(video_frame, "FrameCallback", false);
   }
   else
   {
-    throw std::runtime_error("Failed to convert video frame");
+    throw std::runtime_error("Failed to convert input video frame");
   }
   return S_OK;
 }
@@ -787,6 +893,38 @@ HRESULT DeckLinkDevice::ScheduledFrameCallback(
 {
   (void)(completed_frame);
   (void)(result);
+
+  // Get the waiting output frame
+  DeckLinkMutableVideoFrameHandle raw_output_frame;
+  {
+    std::lock_guard<std::mutex> lock(output_frame_queue_lock_);
+    if (output_frame_queue_.size() > 0)
+    {
+      std::cout << "Popping output frame from queue" << std::endl;
+      raw_output_frame = std::move(output_frame_queue_.front());
+      output_frame_queue_.pop_front();
+    }
+  }
+
+  // Update the command output frame
+  {
+    std::lock_guard<std::mutex> lock(output_conversion_frame_lock_);
+
+    // Convert the waiting output frame (if available)
+    if (raw_output_frame)
+    {
+      std::cout << "Converting output frame" << std::endl;
+      const auto convert_frame_result = output_video_converter_->ConvertFrame(
+          raw_output_frame.get(), output_conversion_frame_.get());
+      if (convert_frame_result != S_OK)
+      {
+        throw std::runtime_error("Failed to convert output video frame");
+      }
+    }
+
+    // Fill the command frame with the contents of the conversion frame
+    CopyVideoFrameBytes(*output_conversion_frame_, *command_output_frame_);
+  }
 
   // Make a SDI control packet
   using BlackmagicSDICameraControlPacketHandle

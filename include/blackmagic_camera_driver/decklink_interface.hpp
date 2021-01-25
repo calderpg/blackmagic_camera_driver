@@ -58,6 +58,16 @@ std::string HexPrint(const T& val)
   return strm.str();
 }
 
+inline int32_t Calc10BitYUVRowBytes(const int32_t frame_width)
+{
+  return ((frame_width + 47) / 48) * 128;
+}
+
+// Enforces that video frames are the same size (# of bytes).
+void CopyVideoFrameBytes(
+    const IDeckLinkVideoFrame& source_frame,
+    IDeckLinkMutableVideoFrame& destination_frame);
+
 enum class LogLevel : uint8_t
 {
   DEBUG = 0x01,
@@ -556,7 +566,7 @@ public:
           video_frame_size_changed_callback_fn,
       const ConvertedVideoFrameCallbackFunction&
           converted_video_frame_callback_fn,
-      DeckLinkHandle device);
+      const BMDDisplayMode output_display_mode, DeckLinkHandle device);
 
   virtual ~DeckLinkDevice() {}
 
@@ -565,6 +575,12 @@ public:
   void StopVideoCapture();
 
   void EnqueueCameraCommand(const BlackmagicSDICameraControlMessage& command);
+
+  void EnqueueOutputFrame(DeckLinkMutableVideoFrameHandle output_frame);
+
+  void ClearOutputQueueAndResetOutputToReferenceFrame();
+
+  DeckLinkMutableVideoFrameHandle CreateBGRA8OutputVideoFrame();
 
   void Log(
       const LogLevel level, const std::string& message,
@@ -655,6 +671,12 @@ private:
   std::mutex camera_command_queue_lock_;
   std::list<BlackmagicSDICameraControlMessage> camera_command_queue_;
 
+  std::mutex output_frame_queue_lock_;
+  std::list<DeckLinkMutableVideoFrameHandle> output_frame_queue_;
+  std::mutex output_conversion_frame_lock_;
+
+  BMDDisplayMode output_display_mode_ = bmdModeUnknown;
+
   std::atomic<bool> enable_tally_{};
 
   int64_t output_frame_counter_ = 0;
@@ -665,10 +687,16 @@ private:
   DeckLinkProfileAttributesHandle attributes_interface_;
   DeckLinkInputHandle input_device_;
   DeckLinkOutputHandle output_device_;
-  DeckLinkVideoConversionHandle video_converter_;
+
+  DeckLinkVideoConversionHandle input_video_converter_;
+  DeckLinkVideoConversionHandle output_video_converter_;
+
   DeckLinkInputCallbackHandle input_callback_;
   DeckLinkOutputCallbackHandle output_callback_;
-  DeckLinkMutableVideoFrameHandle conversion_frame_;
+
+  DeckLinkMutableVideoFrameHandle input_conversion_frame_;
+  DeckLinkMutableVideoFrameHandle output_conversion_frame_;
+
   DeckLinkMutableVideoFrameHandle reference_output_frame_;
   DeckLinkMutableVideoFrameHandle command_output_frame_;
 };
