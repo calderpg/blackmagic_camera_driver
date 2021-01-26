@@ -50,6 +50,16 @@ inline int16_t ConvertToFixed16(const float val)
   return static_cast<int16_t>(multiplied);
 }
 
+inline int32_t Calc10BitYUVRowBytes(const int32_t frame_width)
+{
+  return ((frame_width + 47) / 48) * 128;
+}
+
+// Enforces that video frames are the same size (# of bytes).
+void CopyVideoFrameBytes(
+    const IDeckLinkVideoFrame& source_frame,
+    IDeckLinkMutableVideoFrame& destination_frame);
+
 template<typename T>
 std::string HexPrint(const T& val)
 {
@@ -86,7 +96,7 @@ class FrameReceivedCallback : public IDeckLinkInputCallback
 {
 public:
   FrameReceivedCallback(DeckLinkDevice* parent_device)
-      : parent_device_(parent_device), refcount_(1)
+      : parent_device_(parent_device)
   {
     if (parent_device_ == nullptr)
     {
@@ -129,14 +139,14 @@ public:
 
 private:
   DeckLinkDevice* parent_device_ = nullptr;
-  std::atomic<uint64_t> refcount_{};
+  std::atomic<uint64_t> refcount_{1};
 };
 
 class FrameOutputCallback : public IDeckLinkVideoOutputCallback
 {
 public:
   FrameOutputCallback(DeckLinkDevice* parent_device)
-      : parent_device_(parent_device), refcount_(1)
+      : parent_device_(parent_device)
   {
     if (parent_device_ == nullptr)
     {
@@ -176,7 +186,7 @@ public:
 
 private:
   DeckLinkDevice* parent_device_ = nullptr;
-  std::atomic<uint64_t> refcount_{};
+  std::atomic<uint64_t> refcount_{1};
 };
 
 class BlackmagicSDICameraControlMessage
@@ -468,7 +478,7 @@ private:
   const uint8_t sdid_ = 0x53;
   const uint32_t line_number_ = 16;
   const uint8_t data_stream_index_ = 0x00;
-  std::atomic<uint64_t> refcount_{};
+  std::atomic<uint64_t> refcount_{1};
 };
 
 class BlackmagicSDITallyControlPacket : public IDeckLinkAncillaryPacket
@@ -544,7 +554,7 @@ private:
   const uint8_t sdid_ = 0x52;
   const uint32_t line_number_ = 15;
   const uint8_t data_stream_index_ = 0x00;
-  std::atomic<uint64_t> refcount_{};
+  std::atomic<uint64_t> refcount_{1};
 };
 
 class DeckLinkDevice
@@ -556,7 +566,7 @@ public:
           video_frame_size_changed_callback_fn,
       const ConvertedVideoFrameCallbackFunction&
           converted_video_frame_callback_fn,
-      DeckLinkHandle device);
+      const BMDDisplayMode output_mode, DeckLinkHandle device);
 
   virtual ~DeckLinkDevice() {}
 
@@ -565,6 +575,14 @@ public:
   void StopVideoCapture();
 
   void EnqueueCameraCommand(const BlackmagicSDICameraControlMessage& command);
+
+  void ClearOutputQueueAndResetOutputToReferenceFrame();
+
+  void EnqueueOutputFrame(DeckLinkMutableVideoFrameHandle output_frame);
+
+  DeckLinkMutableVideoFrameHandle CreateBGRA8OutputVideoFrame();
+
+  DeckLinkMutableVideoFrameHandle CreateYUV10OutputVideoFrame();
 
   void Log(
       const LogLevel level, const std::string& message,
@@ -661,15 +679,22 @@ private:
   int64_t output_frame_duration_ = 0;
   int64_t output_frame_timescale_ = 0;
 
+  BMDDisplayMode output_display_mode_ = bmdModeHD1080p30;
+
+  std::mutex output_frame_queue_lock_;
+  std::list<DeckLinkMutableVideoFrameHandle> output_frame_queue_;
+
   DeckLinkHandle device_;
   DeckLinkProfileAttributesHandle attributes_interface_;
   DeckLinkInputHandle input_device_;
   DeckLinkOutputHandle output_device_;
-  DeckLinkVideoConversionHandle video_converter_;
+  DeckLinkVideoConversionHandle input_video_converter_;
+  DeckLinkVideoConversionHandle output_video_converter_;
   DeckLinkInputCallbackHandle input_callback_;
   DeckLinkOutputCallbackHandle output_callback_;
-  DeckLinkMutableVideoFrameHandle conversion_frame_;
+  DeckLinkMutableVideoFrameHandle input_conversion_frame_;
   DeckLinkMutableVideoFrameHandle reference_output_frame_;
+  DeckLinkMutableVideoFrameHandle active_output_frame_;
   DeckLinkMutableVideoFrameHandle command_output_frame_;
 };
 
