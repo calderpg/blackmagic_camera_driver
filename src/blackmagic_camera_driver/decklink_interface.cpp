@@ -67,6 +67,8 @@ void CopyVideoFrameBytes(
       destination_frame_buffer, source_frame_buffer, destination_frame_bytes);
 }
 
+
+
 HRESULT FrameReceivedCallback::VideoInputFormatChanged(
     BMDVideoInputFormatChangedEvents notification_events,
     IDeckLinkDisplayMode* new_display_mode,
@@ -249,6 +251,11 @@ DeckLinkDevice::DeckLinkDevice(
 
   const int32_t output_frame_row_bytes = Calc10BitYUVRowBytes(
       static_cast<int32_t>(real_output_display_mode->GetWidth()));
+  LogInfo(
+      "Output resolution: "
+      + std::to_string(real_output_display_mode->GetWidth()) + " (width) "
+      + std::to_string(real_output_display_mode->GetHeight()) + " (height) "
+      + std::to_string(output_frame_row_bytes) + " (bytes/row)");
 
   // Create a frame for reference output
   IDeckLinkMutableVideoFrame* reference_output_frame_ptr = nullptr;
@@ -679,7 +686,6 @@ HRESULT DeckLinkDevice::InputFormatChangedCallback(
         "Detected bit-depth must be EITHER 8 OR 10 OR 12 bits");
   }
 
-
   BMDPixelFormat pixel_format = bmdFormatUnspecified;
   if (is_ycrcb422)
   {
@@ -1001,13 +1007,6 @@ HRESULT DeckLinkDevice::ScheduledFrameCallback(
   {
     throw std::runtime_error("Failed to attach tally control packet");
   }
-  // Not sure why this is necessary - Blackmagic's examples suggest that
-  // AttachPacket doesn't bump refcount, so we don't want the unique_ptr
-  // destructor to get rid of the tally packet.
-  else
-  {
-    tally_packet.release();
-  }
 
   // Add a control packet
   if (control_packet)
@@ -1018,13 +1017,6 @@ HRESULT DeckLinkDevice::ScheduledFrameCallback(
     if (add_control_packet_result != S_OK)
     {
       throw std::runtime_error("Failed to attach camera control packet");
-    }
-    // Not sure why this is necessary - Blackmagic's examples suggest that
-    // AttachPacket doesn't bump refcount, so we don't want the unique_ptr
-    // destructor to get rid of the control packet.
-    else
-    {
-      control_packet.release();
     }
   }
   return ScheduleNextFrame(*command_output_frame_);
