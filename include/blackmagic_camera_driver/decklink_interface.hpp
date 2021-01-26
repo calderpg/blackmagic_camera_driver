@@ -55,6 +55,11 @@ inline int32_t Calc10BitYUVRowBytes(const int32_t frame_width)
   return ((frame_width + 47) / 48) * 128;
 }
 
+// Enforces that video frames are the same size (# of bytes).
+void CopyVideoFrameBytes(
+    const IDeckLinkVideoFrame& source_frame,
+    IDeckLinkMutableVideoFrame& destination_frame);
+
 template<typename T>
 std::string HexPrint(const T& val)
 {

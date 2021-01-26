@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <mutex>
 #include <stdexcept>
@@ -26,6 +27,77 @@ const BMDDisplayMode kOutputDisplayMode = bmdModeHD1080p30;
 // Poorly documented, many BMD devices only output VANC data when run in
 // v210 YUV output display mode. To be careful, we always output in v210 YUV.
 const BMDPixelFormat kOutputPixelFormat = bmdFormat10BitYUV;
+
+void CopyVideoFrameBytes(
+    const IDeckLinkVideoFrame& source_frame,
+    IDeckLinkMutableVideoFrame& destination_frame)
+{
+  // Const-cast the source frame, because all getters are non-const.
+  IDeckLinkVideoFrame& raw_source_frame
+      = const_cast<IDeckLinkVideoFrame&>(source_frame);
+
+  // Ensure frame resolutions and formats match
+  const auto source_width = raw_source_frame.GetWidth();
+  const auto source_height = raw_source_frame.GetHeight();
+  const auto source_pixel_format = raw_source_frame.GetPixelFormat();
+
+  const auto destination_width = destination_frame.GetWidth();
+  const auto destination_height = destination_frame.GetHeight();
+  const auto destination_pixel_format = destination_frame.GetPixelFormat();
+
+  if (source_width != destination_width)
+  {
+    throw std::runtime_error("Source and destination widths do not match");
+  }
+
+  if (source_height != destination_height)
+  {
+    throw std::runtime_error("Source and destination heights do not match");
+  }
+
+  if (source_pixel_format != destination_pixel_format)
+  {
+    throw std::runtime_error(
+        "Source and destination pixel formats do not match");
+  }
+
+  // Get frame data sizes
+  const size_t source_frame_bytes
+      = raw_source_frame.GetRowBytes() * raw_source_frame.GetHeight();
+
+  const size_t destination_frame_bytes
+      = destination_frame.GetRowBytes() * destination_frame.GetHeight();
+
+  if (source_frame_bytes != destination_frame_bytes)
+  {
+    throw std::runtime_error(
+        "Source and destination frames are different sizes");
+  }
+
+  // Get frame data pointers
+  void* source_frame_buffer = nullptr;
+  const auto get_source_bytes_result = raw_source_frame.GetBytes(
+      reinterpret_cast<void**>(&source_frame_buffer));
+  if (get_source_bytes_result != S_OK || source_frame_buffer == nullptr)
+  {
+    throw std::runtime_error("Failed to get source frame bytes");
+  }
+
+  void* destination_frame_buffer = nullptr;
+  const auto get_destination_bytes_result = destination_frame.GetBytes(
+      reinterpret_cast<void**>(&destination_frame_buffer));
+  if (get_destination_bytes_result != S_OK
+      || destination_frame_buffer == nullptr)
+  {
+    throw std::runtime_error("Failed to get destination frame bytes");
+  }
+
+  std::cout << "[CopyVideoFrameBytes] memcpy-ing " << destination_frame_bytes << " bytes from " << source_frame_buffer << " to " << destination_frame_buffer << std::endl;
+
+  // Copy frame data
+  std::memcpy(
+      destination_frame_buffer, source_frame_buffer, destination_frame_bytes);
+}
 
 HRESULT FrameReceivedCallback::VideoInputFormatChanged(
     BMDVideoInputFormatChangedEvents notification_events,
@@ -278,30 +350,8 @@ DeckLinkDevice::DeckLinkDevice(
     throw std::runtime_error("Failed to get reference output frame bytes");
   }
 
-  // Fill the command frame with cyan pixels
-  uint32_t* command_frame_buffer = nullptr;
-  const auto get_command_bytes_result
-      = command_output_frame_->GetBytes(
-          reinterpret_cast<void**>(&command_frame_buffer));
-  if (get_command_bytes_result == S_OK && command_frame_buffer != nullptr)
-  {
-    const std::vector<uint32_t> cyan_yuv_pixels
-        = { 0x040aa298, 0x2a8a62a8, 0x298aa040, 0x2a8102a8};
-    const size_t num_words
-        = (output_frame_row_bytes * output_display_mode->GetHeight())
-            / sizeof(uint32_t);
-    for (size_t word = 0; word < num_words; word += 4)
-    {
-      command_frame_buffer[word + 0] = cyan_yuv_pixels.at(0);
-      command_frame_buffer[word + 1] = cyan_yuv_pixels.at(1);
-      command_frame_buffer[word + 2] = cyan_yuv_pixels.at(2);
-      command_frame_buffer[word + 3] = cyan_yuv_pixels.at(3);
-    }
-  }
-  else
-  {
-    throw std::runtime_error("Failed to get command output frame bytes");
-  }
+  // Fill the command frame from the reference frame
+  CopyVideoFrameBytes(*reference_output_frame_, *command_output_frame_);
 
   // Create the input callback
   input_callback_

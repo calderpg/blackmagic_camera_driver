@@ -41,8 +41,9 @@ public:
   {
     if (bmd_item_ != nullptr)
     {
-      const auto new_refcount = bmd_item_->Release();
-      std::cout << "[BMDHandle<" << typeid(BMDType).name() << ">] with item " << bmd_item_ << " called Release() with resulting refcount " << new_refcount << std::endl;
+      bmd_item_->Release();
+      // const auto new_refcount = bmd_item_->Release();
+      // std::cout << "[BMDHandle<" << typeid(BMDType).name() << ">] with item " << bmd_item_ << " called Release() with resulting refcount " << new_refcount << std::endl;
     }
     bmd_item_ = bmd_item;
     if (bmd_item_ != nullptr)
@@ -50,8 +51,9 @@ public:
       const auto new_refcount = bmd_item_->AddRef();
       if (new_refcount > 1)
       {
-        const auto item_refcount = bmd_item_->Release();
-        std::cout << "[BMDHandle<" << typeid(BMDType).name() << ">] with item " << bmd_item_ << " created/reset with refcount " << item_refcount << std::endl;
+        bmd_item_->Release();
+        // const auto item_refcount = bmd_item_->Release();
+        // std::cout << "[BMDHandle<" << typeid(BMDType).name() << ">] with item " << bmd_item_ << " created/reset with refcount " << item_refcount << std::endl;
       }
       else
       {
