@@ -94,6 +94,23 @@ public:
     decklink_device_->EnqueueCameraCommand(command);
   }
 
+  void EnqueueOutputFrame(DeckLinkMutableVideoFrameHandle output_frame)
+  {
+    std::cout << "Enqueueing new output frame..." << std::endl;
+    decklink_device_->EnqueueOutputFrame(std::move(output_frame));
+    std::cout << "...new output frame enqueued" << std::endl;
+  }
+
+  void ClearOutputQueueAndResetOutputToReferenceFrame()
+  {
+    decklink_device_->ClearOutputQueueAndResetOutputToReferenceFrame();
+  }
+
+  DeckLinkMutableVideoFrameHandle CreateBGRA8OutputVideoFrame()
+  {
+    return decklink_device_->CreateBGRA8OutputVideoFrame();
+  }
+
 private:
   void VideoFrameSizeChangedCallback(
       const int32_t image_width, const int32_t image_height,
@@ -241,10 +258,62 @@ int DoMain()
 
   std::this_thread::sleep_for(std::chrono::seconds(1));
 
+  // Make primary color image data blocks
+  const size_t num_image_pixels = 1920 * 1080;
+  const size_t num_image_bytes = num_image_pixels * 4;
+  const std::vector<uint32_t> red_color(num_image_pixels, 0xffff0000);
+  const std::vector<uint32_t> green_color(num_image_pixels, 0xff00ff00);
+  const std::vector<uint32_t> blue_color(num_image_pixels, 0xff0000ff);
+
+  int32_t tick = 0;
   // Spin while video callbacks run
   ros::Rate spin_rate(30.0);
   while (ros::ok())
   {
+    tick++;
+
+    const void* image_data_ptr = nullptr;
+    if (tick == 30)
+    {
+      image_data_ptr = red_color.data();
+      std::cout << "Setting output frame to red" << std::endl;
+    }
+    else if (tick == 60)
+    {
+      image_data_ptr = green_color.data();
+      std::cout << "Setting output frame to green" << std::endl;
+    }
+    else if (tick == 90)
+    {
+      image_data_ptr = blue_color.data();
+      std::cout << "Setting output frame to blue" << std::endl;
+      tick = 0;
+    }
+
+    if (image_data_ptr != nullptr)
+    {
+      std::cout << "Creating output frame" << std::endl;
+      auto output_frame = capture_device.CreateBGRA8OutputVideoFrame();
+      uint8_t* output_frame_buffer = nullptr;
+      const auto get_output_bytes_result = output_frame->GetBytes(
+          reinterpret_cast<void**>(&output_frame_buffer));
+      if (get_output_bytes_result != S_OK || output_frame_buffer == nullptr)
+      {
+        throw std::runtime_error("Failed to get output frame bytes");
+      }
+      const size_t output_frame_bytes
+          = output_frame->GetRowBytes() * output_frame->GetHeight();
+      if (output_frame_bytes != num_image_bytes)
+      {
+        throw std::runtime_error(
+            "Image data and frame data are different sizes");
+      }
+
+      std::memcpy(output_frame_buffer, image_data_ptr, num_image_bytes);
+
+      capture_device.EnqueueOutputFrame(std::move(output_frame));
+    }
+
     ros::spinOnce();
     spin_rate.sleep();
   }
