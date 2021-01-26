@@ -5,7 +5,7 @@
 namespace blackmagic_camera_driver
 {
 // Managed pointer type like std::unique_ptr, but aware of BMD's AddRef/Release
-// reference counting system.
+// reference counting system and enforcing some invariants.
 template<typename BMDType>
 class BMDHandle
 {
@@ -42,23 +42,23 @@ public:
     if (bmd_item_ != nullptr)
     {
       bmd_item_->Release();
-      // const auto new_refcount = bmd_item_->Release();
-      // std::cout << "[BMDHandle<" << typeid(BMDType).name() << ">] with item " << bmd_item_ << " called Release() with resulting refcount " << new_refcount << std::endl;
     }
     bmd_item_ = bmd_item;
     if (bmd_item_ != nullptr)
     {
+      // No method is available to check refcount other than a slightly racy
+      // AddRef + Release.
       const auto new_refcount = bmd_item_->AddRef();
+      // Don't accidentally zero the refcount (which will cause delete).
       if (new_refcount > 1)
       {
         bmd_item_->Release();
-        // const auto item_refcount = bmd_item_->Release();
-        // std::cout << "[BMDHandle<" << typeid(BMDType).name() << ">] with item " << bmd_item_ << " created/reset with refcount " << item_refcount << std::endl;
       }
       else
       {
-        std::cout << "[BMDHandle<" << typeid(BMDType).name() << ">] with item " << bmd_item_ << " created/reset with zero refcount" << std::endl;
-        throw std::runtime_error("Creating a handle with zero refcount is a BUG!");
+        throw std::invalid_argument(
+            "Create/reset BMDHandle<" + std::string(typeid(BMDType).name())
+            + "> for an item with zero refcount is a bug");
       }
     }
   }

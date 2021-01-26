@@ -96,9 +96,7 @@ public:
 
   void EnqueueOutputFrame(DeckLinkMutableVideoFrameHandle output_frame)
   {
-    std::cout << "Enqueueing new output frame..." << std::endl;
     decklink_device_->EnqueueOutputFrame(std::move(output_frame));
-    std::cout << "...new output frame enqueued" << std::endl;
   }
 
   void ClearOutputQueueAndResetOutputToReferenceFrame()
@@ -276,23 +274,19 @@ int DoMain()
     if (tick == 30)
     {
       image_data_ptr = red_color.data();
-      std::cout << "Setting output frame to red" << std::endl;
     }
     else if (tick == 60)
     {
       image_data_ptr = green_color.data();
-      std::cout << "Setting output frame to green" << std::endl;
     }
     else if (tick == 90)
     {
       image_data_ptr = blue_color.data();
-      std::cout << "Setting output frame to blue" << std::endl;
       tick = 0;
     }
 
     if (image_data_ptr != nullptr)
     {
-      std::cout << "Creating output frame" << std::endl;
       auto output_frame = capture_device.CreateBGRA8OutputVideoFrame();
       uint8_t* output_frame_buffer = nullptr;
       const auto get_output_bytes_result = output_frame->GetBytes(

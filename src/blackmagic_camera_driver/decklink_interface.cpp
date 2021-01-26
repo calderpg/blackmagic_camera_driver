@@ -90,8 +90,6 @@ void CopyVideoFrameBytes(
     throw std::runtime_error("Failed to get destination frame bytes");
   }
 
-  // std::cout << "[CopyVideoFrameBytes] memcpy-ing " << destination_frame_bytes << " bytes from " << source_frame_buffer << " to " << destination_frame_buffer << std::endl;
-
   // Copy frame data
   std::memcpy(
       destination_frame_buffer, source_frame_buffer, destination_frame_bytes);
@@ -409,8 +407,6 @@ DeckLinkDevice::DeckLinkDevice(
   {
     throw std::runtime_error("Failed to create output video converter");
   }
-
-  std::cout << "Created video converters " << input_video_converter_.get() << " (input) " << output_video_converter_.get() << " (output)" << std::endl;
 
   // We have to setup the conversion frames with defaults, since we will not get
   // an input format changed notification if the real input matches the
