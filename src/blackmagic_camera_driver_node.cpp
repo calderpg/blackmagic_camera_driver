@@ -81,6 +81,7 @@ public:
         LoggingFunction(RosLoggingFunction),
         video_frame_size_changed_callback_fn,
         converted_video_frame_callback_fn,
+        bmdModeHD1080p30,
         std::move(device)));
   }
 

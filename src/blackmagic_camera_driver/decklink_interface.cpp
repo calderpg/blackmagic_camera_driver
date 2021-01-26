@@ -22,8 +22,6 @@ const int32_t kDefaultImageHeight = 1080;
 const BMDDisplayMode kDefaultInputDisplayMode = bmdModeHD1080p30;
 const BMDPixelFormat kDefaultInputPixelFormat = bmdFormat8BitYUV;
 
-// Output video format, used to send VANC commands.
-const BMDDisplayMode kOutputDisplayMode = bmdModeHD1080p30;
 // Poorly documented, many BMD devices only output VANC data when run in
 // v210 YUV output display mode. To be careful, we always output in v210 YUV.
 const BMDPixelFormat kOutputPixelFormat = bmdFormat10BitYUV;
@@ -76,16 +74,16 @@ void CopyVideoFrameBytes(
 
   // Get frame data pointers
   void* source_frame_buffer = nullptr;
-  const auto get_source_bytes_result = raw_source_frame.GetBytes(
-      reinterpret_cast<void**>(&source_frame_buffer));
+  const auto get_source_bytes_result
+      = raw_source_frame.GetBytes(&source_frame_buffer);
   if (get_source_bytes_result != S_OK || source_frame_buffer == nullptr)
   {
     throw std::runtime_error("Failed to get source frame bytes");
   }
 
   void* destination_frame_buffer = nullptr;
-  const auto get_destination_bytes_result = destination_frame.GetBytes(
-      reinterpret_cast<void**>(&destination_frame_buffer));
+  const auto get_destination_bytes_result
+      = destination_frame.GetBytes(&destination_frame_buffer);
   if (get_destination_bytes_result != S_OK
       || destination_frame_buffer == nullptr)
   {
@@ -164,12 +162,12 @@ DeckLinkDevice::DeckLinkDevice(
         video_frame_size_changed_callback_fn,
     const ConvertedVideoFrameCallbackFunction&
         converted_video_frame_callback_fn,
-    DeckLinkHandle device)
+    const BMDDisplayMode output_mode, DeckLinkHandle device)
     : logging_fn_(logging_fn),
       video_frame_size_changed_callback_fn_(
           video_frame_size_changed_callback_fn),
       converted_video_frame_callback_fn_(converted_video_frame_callback_fn),
-      device_(std::move(device))
+      output_display_mode_(output_mode), device_(std::move(device))
 {
   // Get the attributes interface
   IDeckLinkProfileAttributes* attributes_interface_ptr = nullptr;
@@ -238,7 +236,7 @@ DeckLinkDevice::DeckLinkDevice(
   bool command_output_format_supported = false;
   const auto get_command_output_format_supported_result
       = output_device_->DoesSupportVideoMode(
-          bmdVideoConnectionUnspecified, kOutputDisplayMode,
+          bmdVideoConnectionUnspecified, output_display_mode_,
           kOutputPixelFormat, bmdNoVideoOutputConversion,
           bmdSupportedVideoModeDefault, nullptr,
           &command_output_format_supported);
@@ -258,7 +256,7 @@ DeckLinkDevice::DeckLinkDevice(
   // Get output display format information
   IDeckLinkDisplayMode* output_display_mode_ptr = nullptr;
   const auto get_display_mode_result = output_device_->GetDisplayMode(
-      kOutputDisplayMode, &output_display_mode_ptr);
+      output_display_mode_, &output_display_mode_ptr);
   if (get_display_mode_result != S_OK)
   {
     throw std::runtime_error("Failed to get output display mode");
@@ -395,7 +393,7 @@ DeckLinkDevice::DeckLinkDevice(
 void DeckLinkDevice::StartVideoCapture()
 {
   EnableVideoInput(kDefaultInputDisplayMode, kDefaultInputPixelFormat);
-  EnableVideoOutput(kOutputDisplayMode);
+  EnableVideoOutput(output_display_mode_);
   // Blackmagic's examples all schedule 3 frames before starting scheduled
   // playback.
   for (int32_t i = 0; i < 3; i++)

@@ -566,7 +566,7 @@ public:
           video_frame_size_changed_callback_fn,
       const ConvertedVideoFrameCallbackFunction&
           converted_video_frame_callback_fn,
-      DeckLinkHandle device);
+      const BMDDisplayMode output_mode, DeckLinkHandle device);
 
   virtual ~DeckLinkDevice() {}
 
@@ -670,6 +670,8 @@ private:
   int64_t output_frame_counter_ = 0;
   int64_t output_frame_duration_ = 0;
   int64_t output_frame_timescale_ = 0;
+
+  BMDDisplayMode output_display_mode_ = bmdModeHD1080p30;
 
   DeckLinkHandle device_;
   DeckLinkProfileAttributesHandle attributes_interface_;
