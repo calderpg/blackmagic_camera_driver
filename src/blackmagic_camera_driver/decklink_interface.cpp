@@ -863,13 +863,6 @@ HRESULT DeckLinkDevice::ScheduledFrameCallback(
   {
     throw std::runtime_error("Failed to attach tally control packet");
   }
-  // Not sure why this is necessary - Blackmagic's examples suggest that
-  // AttachPacket doesn't bump refcount, so we don't want the unique_ptr
-  // destructor to get rid of the tally packet.
-  else
-  {
-    tally_packet.release();
-  }
 
   // Add a control packet
   if (control_packet)
@@ -880,13 +873,6 @@ HRESULT DeckLinkDevice::ScheduledFrameCallback(
     if (add_control_packet_result != S_OK)
     {
       throw std::runtime_error("Failed to attach camera control packet");
-    }
-    // Not sure why this is necessary - Blackmagic's examples suggest that
-    // AttachPacket doesn't bump refcount, so we don't want the unique_ptr
-    // destructor to get rid of the control packet.
-    else
-    {
-      control_packet.release();
     }
   }
   return ScheduleNextFrame(*command_output_frame_);

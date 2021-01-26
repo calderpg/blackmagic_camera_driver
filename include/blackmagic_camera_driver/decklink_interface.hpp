@@ -86,7 +86,7 @@ class FrameReceivedCallback : public IDeckLinkInputCallback
 {
 public:
   FrameReceivedCallback(DeckLinkDevice* parent_device)
-      : parent_device_(parent_device), refcount_(1)
+      : parent_device_(parent_device)
   {
     if (parent_device_ == nullptr)
     {
@@ -129,14 +129,14 @@ public:
 
 private:
   DeckLinkDevice* parent_device_ = nullptr;
-  std::atomic<uint64_t> refcount_{};
+  std::atomic<uint64_t> refcount_{1};
 };
 
 class FrameOutputCallback : public IDeckLinkVideoOutputCallback
 {
 public:
   FrameOutputCallback(DeckLinkDevice* parent_device)
-      : parent_device_(parent_device), refcount_(1)
+      : parent_device_(parent_device)
   {
     if (parent_device_ == nullptr)
     {
@@ -176,7 +176,7 @@ public:
 
 private:
   DeckLinkDevice* parent_device_ = nullptr;
-  std::atomic<uint64_t> refcount_{};
+  std::atomic<uint64_t> refcount_{1};
 };
 
 class BlackmagicSDICameraControlMessage
@@ -468,7 +468,7 @@ private:
   const uint8_t sdid_ = 0x53;
   const uint32_t line_number_ = 16;
   const uint8_t data_stream_index_ = 0x00;
-  std::atomic<uint64_t> refcount_{};
+  std::atomic<uint64_t> refcount_{1};
 };
 
 class BlackmagicSDITallyControlPacket : public IDeckLinkAncillaryPacket
@@ -544,7 +544,7 @@ private:
   const uint8_t sdid_ = 0x52;
   const uint32_t line_number_ = 15;
   const uint8_t data_stream_index_ = 0x00;
-  std::atomic<uint64_t> refcount_{};
+  std::atomic<uint64_t> refcount_{1};
 };
 
 class DeckLinkDevice
