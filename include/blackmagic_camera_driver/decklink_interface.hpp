@@ -576,6 +576,14 @@ public:
 
   void EnqueueCameraCommand(const BlackmagicSDICameraControlMessage& command);
 
+  void ClearOutputQueueAndResetOutputToReferenceFrame();
+
+  void EnqueueOutputFrame(DeckLinkMutableVideoFrameHandle output_frame);
+
+  DeckLinkMutableVideoFrameHandle CreateBGRA8OutputVideoFrame();
+
+  DeckLinkMutableVideoFrameHandle CreateYUV10OutputVideoFrame();
+
   void Log(
       const LogLevel level, const std::string& message,
       const bool throttle = false)
@@ -673,15 +681,20 @@ private:
 
   BMDDisplayMode output_display_mode_ = bmdModeHD1080p30;
 
+  std::mutex output_frame_queue_lock_;
+  std::list<DeckLinkMutableVideoFrameHandle> output_frame_queue_;
+
   DeckLinkHandle device_;
   DeckLinkProfileAttributesHandle attributes_interface_;
   DeckLinkInputHandle input_device_;
   DeckLinkOutputHandle output_device_;
-  DeckLinkVideoConversionHandle video_converter_;
+  DeckLinkVideoConversionHandle input_video_converter_;
+  DeckLinkVideoConversionHandle output_video_converter_;
   DeckLinkInputCallbackHandle input_callback_;
   DeckLinkOutputCallbackHandle output_callback_;
-  DeckLinkMutableVideoFrameHandle conversion_frame_;
+  DeckLinkMutableVideoFrameHandle input_conversion_frame_;
   DeckLinkMutableVideoFrameHandle reference_output_frame_;
+  DeckLinkMutableVideoFrameHandle active_output_frame_;
   DeckLinkMutableVideoFrameHandle command_output_frame_;
 };
 
