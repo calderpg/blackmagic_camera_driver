@@ -23,11 +23,9 @@ const BMDPixelFormat kDefaultInputPixelFormat = bmdFormat8BitYUV;
 
 // Output video format, used to send VANC commands.
 const BMDDisplayMode kOutputDisplayMode = bmdModeHD1080p30;
-// Undocumented, but it looks like output must be v210 YUV for VANC data to be
-// encoded into frames properly.
+// Poorly documented, many BMD devices only output VANC data when run in
+// v210 YUV output display mode. To be careful, we always output in v210 YUV.
 const BMDPixelFormat kOutputPixelFormat = bmdFormat10BitYUV;
-// TODO(calderpg) Compute this number from frame width instead.
-const int32_t kOutputFrameRowSize = 5120;
 
 HRESULT FrameReceivedCallback::VideoInputFormatChanged(
     BMDVideoInputFormatChangedEvents notification_events,
@@ -209,12 +207,20 @@ DeckLinkDevice::DeckLinkDevice(
     throw std::runtime_error("Failed to get output framerate");
   }
 
+  const int32_t output_frame_row_bytes = Calc10BitYUVRowBytes(
+      static_cast<int32_t>(output_display_mode->GetWidth()));
+  LogInfo(
+      "Output resolution: "
+      + std::to_string(output_display_mode->GetWidth()) + " (width) "
+      + std::to_string(output_display_mode->GetHeight()) + " (height) "
+      + std::to_string(output_frame_row_bytes) + " (bytes/row)");
+
   // Create a frame for reference output
   IDeckLinkMutableVideoFrame* reference_output_frame_ptr = nullptr;
   const auto create_reference_frame_result = output_device_->CreateVideoFrame(
       static_cast<int32_t>(output_display_mode->GetWidth()),
       static_cast<int32_t>(output_display_mode->GetHeight()),
-      kOutputFrameRowSize, kOutputPixelFormat, bmdFrameFlagDefault,
+      output_frame_row_bytes, kOutputPixelFormat, bmdFrameFlagDefault,
       &reference_output_frame_ptr);
   if (create_reference_frame_result == S_OK
       && reference_output_frame_ptr != nullptr)
@@ -233,7 +239,7 @@ DeckLinkDevice::DeckLinkDevice(
   const auto create_command_frame_result = output_device_->CreateVideoFrame(
       static_cast<int32_t>(output_display_mode->GetWidth()),
       static_cast<int32_t>(output_display_mode->GetHeight()),
-      kOutputFrameRowSize, kOutputPixelFormat, bmdFrameFlagDefault,
+      output_frame_row_bytes, kOutputPixelFormat, bmdFrameFlagDefault,
       &command_output_frame_ptr);
   if (create_command_frame_result == S_OK
       && command_output_frame_ptr != nullptr)
@@ -257,7 +263,7 @@ DeckLinkDevice::DeckLinkDevice(
     const std::vector<uint32_t> cyan_yuv_pixels
         = { 0x040aa298, 0x2a8a62a8, 0x298aa040, 0x2a8102a8};
     const size_t num_words
-        = (kOutputFrameRowSize * output_display_mode->GetHeight())
+        = (output_frame_row_bytes * output_display_mode->GetHeight())
             / sizeof(uint32_t);
     for (size_t word = 0; word < num_words; word += 4)
     {
@@ -282,7 +288,7 @@ DeckLinkDevice::DeckLinkDevice(
     const std::vector<uint32_t> cyan_yuv_pixels
         = { 0x040aa298, 0x2a8a62a8, 0x298aa040, 0x2a8102a8};
     const size_t num_words
-        = (kOutputFrameRowSize * output_display_mode->GetHeight())
+        = (output_frame_row_bytes * output_display_mode->GetHeight())
             / sizeof(uint32_t);
     for (size_t word = 0; word < num_words; word += 4)
     {

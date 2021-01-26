@@ -50,6 +50,11 @@ inline int16_t ConvertToFixed16(const float val)
   return static_cast<int16_t>(multiplied);
 }
 
+inline int32_t Calc10BitYUVRowBytes(const int32_t frame_width)
+{
+  return ((frame_width + 47) / 48) * 128;
+}
+
 template<typename T>
 std::string HexPrint(const T& val)
 {
