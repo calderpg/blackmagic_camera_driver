@@ -89,7 +89,7 @@ add_library(${PROJECT_NAME}
             include/${PROJECT_NAME}/decklink_interface.hpp
             src/${PROJECT_NAME}/decklink_interface.cpp)
 add_dependencies(${PROJECT_NAME} ${catkin_EXPORTED_TARGETS})
-target_link_libraries(${PROJECT_NAME} decklink)
+target_link_libraries(${PROJECT_NAME} decklink ${CMAKE_DL_LIBS})
 
 add_executable(blackmagic_camera_driver_node
                src/blackmagic_camera_driver_node.cpp)
@@ -97,7 +97,17 @@ add_dependencies(blackmagic_camera_driver_node ${catkin_EXPORTED_TARGETS})
 target_link_libraries(blackmagic_camera_driver_node
                       ${PROJECT_NAME} ${catkin_LIBRARIES})
 
-install(TARGETS decklink ${PROJECT_NAME} blackmagic_camera_driver_node
+add_executable(video_input_demo src/video_input_demo.cpp)
+add_dependencies(video_input_demo ${catkin_EXPORTED_TARGETS})
+target_link_libraries(video_input_demo ${PROJECT_NAME} ${catkin_LIBRARIES})
+
+add_executable(video_output_demo src/video_output_demo.cpp)
+add_dependencies(video_output_demo ${catkin_EXPORTED_TARGETS})
+target_link_libraries(video_output_demo ${PROJECT_NAME} ${catkin_LIBRARIES})
+
+install(TARGETS
+    decklink ${PROJECT_NAME} blackmagic_camera_driver_node video_input_demo
+    video_output_demo
     ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
     LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
     RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}

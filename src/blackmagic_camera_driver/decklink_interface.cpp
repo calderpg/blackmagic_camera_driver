@@ -28,7 +28,7 @@ const BMDPixelFormat kOutputPixelFormat = bmdFormat10BitYUV;
 
 void CopyVideoFrameBytes(
     const IDeckLinkVideoFrame& source_frame,
-    IDeckLinkMutableVideoFrame& destination_frame)
+    IDeckLinkVideoFrame& destination_frame)
 {
   // Const-cast the source frame, because all getters are non-const.
   IDeckLinkVideoFrame& raw_source_frame
@@ -154,19 +154,19 @@ HRESULT FrameOutputCallback::ScheduledPlaybackHasStopped()
   return S_OK;
 }
 
-DeckLinkDevice::DeckLinkDevice(
-    const LoggingFunction& logging_fn,
-    const VideoFrameSizeChangedCallbackFunction&
-        video_frame_size_changed_callback_fn,
-    const ConvertedVideoFrameCallbackFunction&
-        converted_video_frame_callback_fn,
-    const BMDDisplayMode output_mode, DeckLinkHandle device)
-    : logging_fn_(logging_fn),
-      video_frame_size_changed_callback_fn_(
-          video_frame_size_changed_callback_fn),
-      converted_video_frame_callback_fn_(converted_video_frame_callback_fn),
-      output_display_mode_(output_mode), device_(std::move(device))
+// Base class
+DeckLinkBaseDevice::DeckLinkBaseDevice(
+    const LoggingFunction& logging_fn, DeckLinkHandle device)
 {
+  InitializeBaseDevice(logging_fn, std::move(device));
+}
+
+void DeckLinkBaseDevice::InitializeBaseDevice(
+      const LoggingFunction& logging_fn, DeckLinkHandle device)
+{
+  logging_fn_ = logging_fn;
+  device_ = std::move(device);
+
   // Get the attributes interface
   IDeckLinkProfileAttributes* attributes_interface_ptr = nullptr;
   const auto get_attributes_result = device_->QueryInterface(
@@ -182,9 +182,147 @@ DeckLinkDevice::DeckLinkDevice(
     throw std::runtime_error("Failed to get attributes interface");
   }
 
+  // Make the video converter
+  video_converter_
+      = DeckLinkVideoConversionHandle(CreateVideoConversionInstance());
+  if (!video_converter_)
+  {
+    throw std::runtime_error("Failed to create video converter");
+  }
+}
+
+void DeckLinkBaseDevice::LogVideoFrameAncillaryPackets(
+    const IDeckLinkVideoFrame& video_frame, const std::string& msg,
+    const bool log_debug)
+{
+  // Get ancillary packets
+  IDeckLinkVideoFrameAncillaryPackets* ancillary_packets_ptr = nullptr;
+  const auto get_ancillary_packets_result
+      = const_cast<IDeckLinkVideoFrame*>(&video_frame)->QueryInterface(
+          IID_IDeckLinkVideoFrameAncillaryPackets,
+          reinterpret_cast<void**>(&ancillary_packets_ptr));
+  DeckLinkVideoFrameAncillaryPacketsHandle ancillary_packets;
+  if (get_ancillary_packets_result == S_OK
+      && ancillary_packets_ptr != nullptr)
+  {
+    ancillary_packets
+        = DeckLinkVideoFrameAncillaryPacketsHandle(ancillary_packets_ptr);
+  }
+  else
+  {
+    throw std::runtime_error("Failed to retrieve ancillary packets");
+  }
+
+  // Get the packet iterator
+  IDeckLinkAncillaryPacketIterator* ancillary_packet_iterator_ptr = nullptr;
+  const auto get_ancillary_packet_iterator_result
+      = ancillary_packets->GetPacketIterator(&ancillary_packet_iterator_ptr);
+  DeckLinkAncillaryPacketIteratorHandle ancillary_packet_iterator;
+  if (get_ancillary_packet_iterator_result == S_OK
+      && ancillary_packet_iterator_ptr != nullptr)
+  {
+    ancillary_packet_iterator = DeckLinkAncillaryPacketIteratorHandle(
+        ancillary_packet_iterator_ptr);
+  }
+  else
+  {
+    throw std::runtime_error("Failed to retrieve ancillary packet iterator");
+  }
+
+  // Go through the packets
+  std::vector<DeckLinkAncillaryPacketHandle> received_packets;
+
+  while (true)
+  {
+    IDeckLinkAncillaryPacket* ancillary_packet_ptr = nullptr;
+    if (ancillary_packet_iterator->Next(&ancillary_packet_ptr) == S_OK)
+    {
+      received_packets.emplace_back(ancillary_packet_ptr);
+    }
+    else
+    {
+      break;
+    }
+  }
+
+  if (received_packets.size() > 0)
+  {
+    std::string log_string =
+        "[" + msg + "] Video frame contains "
+        + std::to_string(received_packets.size()) + " SDI ancillary packets:";
+
+    for (size_t idx = 0; idx < received_packets.size(); idx++)
+    {
+      const auto& packet = received_packets.at(idx);
+
+      const uint8_t* packet_data_ptr = nullptr;
+      uint32_t packet_data_size = 0u;
+      const auto get_bytes_result = packet->GetBytes(
+          bmdAncillaryPacketFormatUInt8,
+          reinterpret_cast<const void**>(&packet_data_ptr), &packet_data_size);
+
+      std::string data_str;
+      if (get_bytes_result == S_OK)
+      {
+        for (uint32_t data_idx = 0; data_idx < packet_data_size; data_idx++)
+        {
+          const uint8_t data_val = packet_data_ptr[data_idx];
+          if (data_idx > 0)
+          {
+            data_str += ", ";
+          }
+          data_str += std::to_string(static_cast<uint32_t>(data_val));
+        }
+      }
+      else
+      {
+        data_str = "non-uint8_t packet data";
+      }
+
+      log_string +=
+          "\nAncillary packet [" + std::to_string(idx) + "] has DID 0x"
+          + HexPrint(packet->GetDID()) + ", SDID 0x"
+          + HexPrint(packet->GetSDID()) + ", VANC line "
+          + std::to_string(packet->GetLineNumber()) + ", data stream index 0x"
+          + HexPrint(packet->GetDataStreamIndex()) + ", and data: [" + data_str
+          + "]";
+    }
+
+    if (log_debug) {
+      LogDebug(log_string);
+    } else {
+      LogInfo(log_string);
+    }
+  }
+}
+
+// Input device class
+DeckLinkInputDevice::DeckLinkInputDevice(
+    const LoggingFunction& logging_fn,
+    const VideoFrameSizeChangedCallbackFunction&
+        video_frame_size_changed_callback_fn,
+    const ConvertedVideoFrameCallbackFunction&
+        converted_video_frame_callback_fn,
+    DeckLinkHandle device)
+{
+  InitializeBaseDevice(logging_fn, std::move(device));
+  InitializeInputDevice(
+      video_frame_size_changed_callback_fn, converted_video_frame_callback_fn);
+}
+
+void DeckLinkInputDevice::InitializeInputDevice(
+    const VideoFrameSizeChangedCallbackFunction&
+        video_frame_size_changed_callback_fn,
+    const ConvertedVideoFrameCallbackFunction&
+        converted_video_frame_callback_fn)
+{
+  video_frame_size_changed_callback_fn_ =
+      video_frame_size_changed_callback_fn;
+  converted_video_frame_callback_fn_ = converted_video_frame_callback_fn;
+
   // Check if device supports input format detection
   bool supports_input_format_detection = false;
-  const auto input_format_detection_result = attributes_interface_->GetFlag(
+  const auto input_format_detection_result = GetAttributesInterface().GetFlag(
       BMDDeckLinkSupportsInputFormatDetection,
       &supports_input_format_detection);
   if (input_format_detection_result == S_OK)
@@ -206,7 +344,7 @@ DeckLinkDevice::DeckLinkDevice(
 
   // Get the input interface
   IDeckLinkInput* input_device_ptr = nullptr;
-  const auto get_input_result = device_->QueryInterface(
+  const auto get_input_result = GetDevice().QueryInterface(
       IID_IDeckLinkInput, reinterpret_cast<void**>(&input_device_ptr));
   if (get_input_result == S_OK)
   {
@@ -217,9 +355,276 @@ DeckLinkDevice::DeckLinkDevice(
     throw std::runtime_error("Failed to get input interface");
   }
 
+  // Create the input callback
+  input_callback_
+      = DeckLinkInputCallbackHandle(new FrameReceivedCallback(this));
+
+  // Bind the callback
+  const auto set_input_callback_result
+      = input_device_->SetCallback(input_callback_.get());
+  if (set_input_callback_result != S_OK)
+  {
+    throw std::runtime_error("Failed to set input callback");
+  }
+
+  // We have to setup the conversion frames with defaults, since we will not get
+  // an input format changed notification if the real input matches the
+  // defaults.
+  SetupConversionAndPublishingFrames(kDefaultImageWidth, kDefaultImageHeight);
+}
+
+void DeckLinkInputDevice::RestartCapture(
+    const BMDDisplayMode display_mode, const BMDPixelFormat pixel_format)
+{
+  EnableVideoInput(display_mode, pixel_format);
+  FlushStreams();
+  StartStreams();
+}
+
+void DeckLinkInputDevice::EnableVideoInput(
+    const BMDDisplayMode display_mode, const BMDPixelFormat pixel_format)
+{
+  const auto result = input_device_->EnableVideoInput(
+      display_mode, pixel_format, bmdVideoInputEnableFormatDetection);
+  if (result != S_OK)
+  {
+    throw std::runtime_error("Failed to enable video input");
+  }
+}
+
+void DeckLinkInputDevice::DisableVideoInput()
+{
+  const auto result = input_device_->DisableVideoInput();
+  if (result != S_OK)
+  {
+    throw std::runtime_error("Failed to disable video input");
+  }
+}
+
+void DeckLinkInputDevice::StartStreams()
+{
+  const auto result = input_device_->StartStreams();
+  if (result != S_OK)
+  {
+    throw std::runtime_error("Failed to start streams");
+  }
+}
+
+void DeckLinkInputDevice::FlushStreams()
+{
+  const auto result = input_device_->FlushStreams();
+  if (result != S_OK)
+  {
+    throw std::runtime_error("Failed to flush streams");
+  }
+}
+
+void DeckLinkInputDevice::PauseStreams()
+{
+  const auto result = input_device_->PauseStreams();
+  if (result != S_OK)
+  {
+    throw std::runtime_error("Failed to pause streams");
+  }
+}
+
+void DeckLinkInputDevice::StopStreams()
+{
+  const auto result = input_device_->StopStreams();
+  if (result != S_OK)
+  {
+    throw std::runtime_error("Failed to stop streams");
+  }
+}
+
+void DeckLinkInputDevice::SetupConversionAndPublishingFrames(
+    const int64_t image_width, const int64_t image_height)
+{
+  // bgra8 is 4 bytes/pixel
+  const int64_t row_bytes = image_width * 4;
+
+  // Make the video frame for input conversion
+  input_conversion_frame_.reset(new InputConversionVideoFrame(
+      image_width, image_height, row_bytes, bmdFormat8BitBGRA,
+      bmdFrameFlagDefault));
+
+  video_frame_size_changed_callback_fn_(image_width, image_height, row_bytes);
+}
+
+HRESULT DeckLinkInputDevice::InputFormatChangedCallback(
+    const BMDVideoInputFormatChangedEvents notification_events,
+    const IDeckLinkDisplayMode& new_display_mode,
+    const BMDDetectedVideoInputFormatFlags detected_signal_flags)
+{
+  // What kind of notification is it?
+  if (notification_events & bmdVideoInputDisplayModeChanged)
+  {
+    LogInfo("InputFormatChangedCallback -> bmdVideoInputDisplayModeChanged");
+  }
+  if (notification_events & bmdVideoInputFieldDominanceChanged)
+  {
+    LogInfo("InputFormatChangedCallback -> bmdVideoInputFieldDominanceChanged");
+  }
+  if (notification_events & bmdVideoInputColorspaceChanged)
+  {
+    LogInfo("InputFormatChangedCallback -> bmdVideoInputColorspaceChanged");
+  }
+
+  // What pixel format does it have?
+  bool is_ycrcb422 = false;
+  bool is_rgb444 = false;
+
+  if (detected_signal_flags & bmdDetectedVideoInputYCbCr422)
+  {
+    LogInfo("Detected signal is YCbCr422");
+    is_ycrcb422 = true;
+  }
+  if (detected_signal_flags & bmdDetectedVideoInputRGB444)
+  {
+    LogInfo("Detected signal is RGB444");
+    is_rgb444 = true;
+  }
+
+  if (is_ycrcb422 == is_rgb444)
+  {
+    throw std::runtime_error(
+        "Detected signal must be EITHER YCbCr422 OR RGB444");
+  }
+
+  if (detected_signal_flags & bmdDetectedVideoInputDualStream3D)
+  {
+    throw std::runtime_error("Dual-stream 3D is not supported");
+  }
+
+  bool is_8bit = false;
+  bool is_10bit = false;
+  bool is_12bit = false;
+
+  if (detected_signal_flags & bmdDetectedVideoInput8BitDepth)
+  {
+    LogInfo("Detected signal is 8-bit");
+    is_8bit = true;
+  }
+  if (detected_signal_flags & bmdDetectedVideoInput10BitDepth)
+  {
+    LogInfo("Detected signal is 10-bit");
+    is_10bit = true;
+  }
+  if (detected_signal_flags & bmdDetectedVideoInput12BitDepth)
+  {
+    LogInfo("Detected signal is 12-bit");
+    is_12bit = true;
+  }
+
+  if (!((is_8bit && !is_10bit && !is_12bit) ||
+        (!is_8bit && is_10bit && !is_12bit) ||
+        (!is_8bit && !is_10bit && is_12bit)))
+  {
+    throw std::runtime_error(
+        "Detected bit-depth must be EITHER 8 OR 10 OR 12 bits");
+  }
+
+
+  BMDPixelFormat pixel_format = bmdFormatUnspecified;
+  if (is_ycrcb422)
+  {
+    if (is_8bit)
+    {
+      LogInfo("Determined pixel format: bmdFormat8BitYUV");
+      pixel_format = bmdFormat8BitYUV;
+    }
+    else if (is_10bit)
+    {
+      LogInfo("Determined pixel format: bmdFormat10BitYUV");
+      pixel_format = bmdFormat10BitYUV;
+    }
+    else if (is_12bit)
+    {
+      throw std::runtime_error("Cannot combine YCrCb422 with 12-bit depth");
+    }
+  }
+  else if (is_rgb444)
+  {
+    if (is_8bit)
+    {
+      LogInfo("Determined pixel format: bmdFormat8BitBGRA");
+      pixel_format = bmdFormat8BitBGRA;
+    }
+    else if (is_10bit)
+    {
+      LogInfo("Determined pixel format: bmdFormat10BitRGB");
+      pixel_format = bmdFormat10BitRGB;
+    }
+    else if (is_12bit)
+    {
+      LogInfo("Determined pixel format: bmdFormat12BitRGB");
+      pixel_format = bmdFormat12BitRGB;
+    }
+  }
+
+  if (pixel_format == bmdFormatUnspecified)
+  {
+    throw std::runtime_error("Unable to determine pixel format");
+  }
+
+  // How big is the image format?
+  const int64_t width =
+      const_cast<IDeckLinkDisplayMode&>(new_display_mode).GetWidth();
+  const int64_t height =
+      const_cast<IDeckLinkDisplayMode&>(new_display_mode).GetHeight();
+  LogInfo(
+      "New display mode is " + std::to_string(width) + " (width) x "
+      + std::to_string(height) + " (height)");
+
+  // What is the display mode (resolution + framerate)?
+  const BMDDisplayMode display_mode
+      = const_cast<IDeckLinkDisplayMode&>(new_display_mode).GetDisplayMode();
+
+  // Reset with new format
+  PauseStreams();
+  SetupConversionAndPublishingFrames(width, height);
+  RestartCapture(display_mode, pixel_format);
+
+  return S_OK;
+}
+
+HRESULT DeckLinkInputDevice::FrameCallback(
+    const IDeckLinkVideoInputFrame& video_frame,
+    const IDeckLinkAudioInputPacket& audio_packet)
+{
+  (void)(audio_packet);
+  const auto convert_frame_result = GetVideoConverter().ConvertFrame(
+      const_cast<IDeckLinkVideoInputFrame*>(&video_frame),
+      input_conversion_frame_.get());
+  if (convert_frame_result == S_OK)
+  {
+    converted_video_frame_callback_fn_(*input_conversion_frame_);
+    LogVideoFrameAncillaryPackets(video_frame, "FrameCallback", false);
+  }
+  else
+  {
+    throw std::runtime_error("Failed to convert video frame");
+  }
+  return S_OK;
+}
+
+// Output device class
+DeckLinkOutputDevice::DeckLinkOutputDevice(
+    const LoggingFunction& logging_fn, const BMDDisplayMode output_mode,
+    DeckLinkHandle device)
+{
+  InitializeBaseDevice(logging_fn, std::move(device));
+  InitializeOutputDevice(output_mode);
+}
+
+void DeckLinkOutputDevice::InitializeOutputDevice(
+    const BMDDisplayMode output_mode)
+{
+  output_display_mode_ = output_mode;
+
   // Get the output interface
   IDeckLinkOutput* output_device_ptr = nullptr;
-  const auto get_output_result = device_->QueryInterface(
+  const auto get_output_result = GetDevice().QueryInterface(
       IID_IDeckLinkOutput, reinterpret_cast<void**>(&output_device_ptr));
   if (get_output_result == S_OK)
   {
@@ -369,18 +774,6 @@ DeckLinkDevice::DeckLinkDevice(
   CopyVideoFrameBytes(*reference_output_frame_, *active_output_frame_);
   CopyVideoFrameBytes(*reference_output_frame_, *command_output_frame_);
 
-  // Create the input callback
-  input_callback_
-      = DeckLinkInputCallbackHandle(new FrameReceivedCallback(this));
-
-  // Bind the callback
-  const auto set_input_callback_result
-      = input_device_->SetCallback(input_callback_.get());
-  if (set_input_callback_result != S_OK)
-  {
-    throw std::runtime_error("Failed to set input callback");
-  }
-
   // Create the output callback
   output_callback_
       = DeckLinkOutputCallbackHandle(new FrameOutputCallback(this));
@@ -393,71 +786,23 @@ DeckLinkDevice::DeckLinkDevice(
   {
     throw std::runtime_error("Failed to set output callback");
   }
-
-  // Make the video converters
-  input_video_converter_
-      = DeckLinkVideoConversionHandle(CreateVideoConversionInstance());
-  if (!input_video_converter_)
-  {
-    throw std::runtime_error("Failed to create input video converter");
-  }
-  output_video_converter_
-      = DeckLinkVideoConversionHandle(CreateVideoConversionInstance());
-  if (!output_video_converter_)
-  {
-    throw std::runtime_error("Failed to create output video converter");
-  }
-
-  // We have to setup the conversion frames with defaults, since we will not get
-  // an input format changed notification if the real input matches the
-  // defaults.
-  SetupConversionAndPublishingFrames(kDefaultImageWidth, kDefaultImageHeight);
 }
 
-void DeckLinkDevice::StartVideoCapture()
-{
-  EnableVideoInput(kDefaultInputDisplayMode, kDefaultInputPixelFormat);
-  EnableVideoOutput(output_display_mode_);
-  // Blackmagic's examples all schedule 3 frames before starting scheduled
-  // playback.
-  for (int32_t i = 0; i < 3; i++)
-  {
-    if (ScheduleNextFrame(*reference_output_frame_) != S_OK)
-    {
-      throw std::runtime_error("Failed to schedule starting output frame");
-    }
-  }
-  StartStreams();
-  StartScheduledPlayback();
-  TallyOn();
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
-}
-
-void DeckLinkDevice::StopVideoCapture()
-{
-  TallyOff();
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  StopStreams();
-  StopScheduledPlayback();
-  DisableVideoInput();
-  DisableVideoOutput();
-}
-
-void DeckLinkDevice::EnqueueCameraCommand(
+void DeckLinkOutputDevice::EnqueueCameraCommand(
     const BlackmagicSDICameraControlMessage& command)
 {
   std::lock_guard<std::mutex> lock(camera_command_queue_lock_);
   camera_command_queue_.push_back(command);
 }
 
-void DeckLinkDevice::ClearOutputQueueAndResetOutputToReferenceFrame()
+void DeckLinkOutputDevice::ClearOutputQueueAndResetOutputToReferenceFrame()
 {
   std::lock_guard<std::mutex> lock(output_frame_queue_lock_);
   output_frame_queue_.clear();
   CopyVideoFrameBytes(*reference_output_frame_, *active_output_frame_);
 }
 
-void DeckLinkDevice::EnqueueOutputFrame(
+void DeckLinkOutputDevice::EnqueueOutputFrame(
     DeckLinkMutableVideoFrameHandle output_frame)
 {
   const auto reference_width = reference_output_frame_->GetWidth();
@@ -484,7 +829,7 @@ void DeckLinkDevice::EnqueueOutputFrame(
   {
     // Convert the provided frame to v210 YUV, then enqueue
     auto conversion_frame = CreateYUV10OutputVideoFrame();
-    const auto convert_frame_result = output_video_converter_->ConvertFrame(
+    const auto convert_frame_result = GetVideoConverter().ConvertFrame(
         output_frame.get(), conversion_frame.get());
     if (convert_frame_result != S_OK)
     {
@@ -496,7 +841,8 @@ void DeckLinkDevice::EnqueueOutputFrame(
   }
 }
 
-DeckLinkMutableVideoFrameHandle DeckLinkDevice::CreateBGRA8OutputVideoFrame()
+DeckLinkMutableVideoFrameHandle
+DeckLinkOutputDevice::CreateBGRA8OutputVideoFrame()
 {
   const int32_t image_width
       = static_cast<int32_t>(reference_output_frame_->GetWidth());
@@ -520,7 +866,8 @@ DeckLinkMutableVideoFrameHandle DeckLinkDevice::CreateBGRA8OutputVideoFrame()
   }
 }
 
-DeckLinkMutableVideoFrameHandle DeckLinkDevice::CreateYUV10OutputVideoFrame()
+DeckLinkMutableVideoFrameHandle
+DeckLinkOutputDevice::CreateYUV10OutputVideoFrame()
 {
   const int32_t image_width
       = static_cast<int32_t>(reference_output_frame_->GetWidth());
@@ -543,45 +890,17 @@ DeckLinkMutableVideoFrameHandle DeckLinkDevice::CreateYUV10OutputVideoFrame()
   }
 }
 
-void DeckLinkDevice::RestartCapture(
-    const BMDDisplayMode display_mode, const BMDPixelFormat pixel_format)
+void DeckLinkOutputDevice::EnableVideoOutput()
 {
-  EnableVideoInput(display_mode, pixel_format);
-  FlushStreams();
-  StartStreams();
-}
-
-void DeckLinkDevice::EnableVideoInput(
-    const BMDDisplayMode display_mode, const BMDPixelFormat pixel_format)
-{
-  const auto result = input_device_->EnableVideoInput(
-      display_mode, pixel_format, bmdVideoInputEnableFormatDetection);
-  if (result != S_OK)
-  {
-    throw std::runtime_error("Failed to enable video input");
-  }
-}
-
-void DeckLinkDevice::EnableVideoOutput(const BMDDisplayMode display_mode)
-{
-  const auto result
-      = output_device_->EnableVideoOutput(display_mode, bmdVideoOutputVANC);
+  const auto result = output_device_->EnableVideoOutput(
+      output_display_mode_, bmdVideoOutputVANC);
   if (result != S_OK)
   {
     throw std::runtime_error("Failed to enable video output");
   }
 }
 
-void DeckLinkDevice::DisableVideoInput()
-{
-  const auto result = input_device_->DisableVideoInput();
-  if (result != S_OK)
-  {
-    throw std::runtime_error("Failed to disable video input");
-  }
-}
-
-void DeckLinkDevice::DisableVideoOutput()
+void DeckLinkOutputDevice::DisableVideoOutput()
 {
   const auto result = output_device_->DisableVideoOutput();
   if (result != S_OK)
@@ -590,43 +909,7 @@ void DeckLinkDevice::DisableVideoOutput()
   }
 }
 
-void DeckLinkDevice::StartStreams()
-{
-  const auto result = input_device_->StartStreams();
-  if (result != S_OK)
-  {
-    throw std::runtime_error("Failed to start streams");
-  }
-}
-
-void DeckLinkDevice::FlushStreams()
-{
-  const auto result = input_device_->FlushStreams();
-  if (result != S_OK)
-  {
-    throw std::runtime_error("Failed to flush streams");
-  }
-}
-
-void DeckLinkDevice::PauseStreams()
-{
-  const auto result = input_device_->PauseStreams();
-  if (result != S_OK)
-  {
-    throw std::runtime_error("Failed to pause streams");
-  }
-}
-
-void DeckLinkDevice::StopStreams()
-{
-  const auto result = input_device_->StopStreams();
-  if (result != S_OK)
-  {
-    throw std::runtime_error("Failed to stop streams");
-  }
-}
-
-void DeckLinkDevice::StartScheduledPlayback()
+void DeckLinkOutputDevice::StartScheduledPlayback()
 {
   const auto result =
       output_device_->StartScheduledPlayback(0, output_frame_timescale_, 1.0);
@@ -636,7 +919,7 @@ void DeckLinkDevice::StartScheduledPlayback()
   }
 }
 
-void DeckLinkDevice::StopScheduledPlayback()
+void DeckLinkOutputDevice::StopScheduledPlayback()
 {
   const auto result = output_device_->StopScheduledPlayback(0, nullptr, 0);
   if (result != S_OK)
@@ -645,170 +928,21 @@ void DeckLinkDevice::StopScheduledPlayback()
   }
 }
 
-void DeckLinkDevice::SetupConversionAndPublishingFrames(
-    const int32_t image_width, const int32_t image_height)
+void DeckLinkOutputDevice::PreScheduleReferenceFrame()
 {
-  // bgra8 is 4 bytes/pixel
-  const int32_t image_step = image_width * 4;
-
-  // Make the video frame for input conversion
-  IDeckLinkMutableVideoFrame* input_conversion_video_frame_ptr = nullptr;
-  const auto create_video_frame_result = output_device_->CreateVideoFrame(
-      image_width, image_height, image_step, bmdFormat8BitBGRA,
-      bmdFrameFlagDefault, &input_conversion_video_frame_ptr);
-  if (create_video_frame_result == S_OK
-      && input_conversion_video_frame_ptr != nullptr)
+  // Blackmagic's examples all schedule 3 frames before starting scheduled
+  // playback.
+  for (int32_t i = 0; i < 3; i++)
   {
-    input_conversion_frame_
-        = DeckLinkMutableVideoFrameHandle(input_conversion_video_frame_ptr);
+    if (ScheduleNextFrame(*reference_output_frame_) != S_OK)
+    {
+      throw std::runtime_error("Failed to schedule starting output frame");
+    }
   }
-  else
-  {
-    throw std::runtime_error(
-        "Failed to create video frame for pixel format conversion");
-  }
-
-  video_frame_size_changed_callback_fn_(image_width, image_height, image_step);
 }
 
-HRESULT DeckLinkDevice::InputFormatChangedCallback(
-    const BMDVideoInputFormatChangedEvents notification_events,
-    const IDeckLinkDisplayMode& new_display_mode,
-    const BMDDetectedVideoInputFormatFlags detected_signal_flags)
-{
-  // What kind of notification is it?
-  if (notification_events & bmdVideoInputDisplayModeChanged)
-  {
-    LogInfo("InputFormatChangedCallback -> bmdVideoInputDisplayModeChanged");
-  }
-  if (notification_events & bmdVideoInputFieldDominanceChanged)
-  {
-    LogInfo("InputFormatChangedCallback -> bmdVideoInputFieldDominanceChanged");
-  }
-  if (notification_events & bmdVideoInputColorspaceChanged)
-  {
-    LogInfo("InputFormatChangedCallback -> bmdVideoInputColorspaceChanged");
-  }
-
-  // What pixel format does it have?
-  bool is_ycrcb422 = false;
-  bool is_rgb444 = false;
-
-  if (detected_signal_flags & bmdDetectedVideoInputYCbCr422)
-  {
-    LogInfo("Detected signal is YCbCr422");
-    is_ycrcb422 = true;
-  }
-  if (detected_signal_flags & bmdDetectedVideoInputRGB444)
-  {
-    LogInfo("Detected signal is RGB444");
-    is_rgb444 = true;
-  }
-
-  if (is_ycrcb422 == is_rgb444)
-  {
-    throw std::runtime_error(
-        "Detected signal must be EITHER YCbCr422 OR RGB444");
-  }
-
-  if (detected_signal_flags & bmdDetectedVideoInputDualStream3D)
-  {
-    throw std::runtime_error("Dual-stream 3D is not supported");
-  }
-
-  bool is_8bit = false;
-  bool is_10bit = false;
-  bool is_12bit = false;
-
-  if (detected_signal_flags & bmdDetectedVideoInput8BitDepth)
-  {
-    LogInfo("Detected signal is 8-bit");
-    is_8bit = true;
-  }
-  if (detected_signal_flags & bmdDetectedVideoInput10BitDepth)
-  {
-    LogInfo("Detected signal is 10-bit");
-    is_10bit = true;
-  }
-  if (detected_signal_flags & bmdDetectedVideoInput12BitDepth)
-  {
-    LogInfo("Detected signal is 12-bit");
-    is_12bit = true;
-  }
-
-  if (!((is_8bit && !is_10bit && !is_12bit) ||
-        (!is_8bit && is_10bit && !is_12bit) ||
-        (!is_8bit && !is_10bit && is_12bit)))
-  {
-    throw std::runtime_error(
-        "Detected bit-depth must be EITHER 8 OR 10 OR 12 bits");
-  }
-
-
-  BMDPixelFormat pixel_format = bmdFormatUnspecified;
-  if (is_ycrcb422)
-  {
-    if (is_8bit)
-    {
-      LogInfo("Determined pixel format: bmdFormat8BitYUV");
-      pixel_format = bmdFormat8BitYUV;
-    }
-    else if (is_10bit)
-    {
-      LogInfo("Determined pixel format: bmdFormat10BitYUV");
-      pixel_format = bmdFormat10BitYUV;
-    }
-    else if (is_12bit)
-    {
-      throw std::runtime_error("Cannot combine YCrCb422 with 12-bit depth");
-    }
-  }
-  else if (is_rgb444)
-  {
-    if (is_8bit)
-    {
-      LogInfo("Determined pixel format: bmdFormat8BitBGRA");
-      pixel_format = bmdFormat8BitBGRA;
-    }
-    else if (is_10bit)
-    {
-      LogInfo("Determined pixel format: bmdFormat10BitRGB");
-      pixel_format = bmdFormat10BitRGB;
-    }
-    else if (is_12bit)
-    {
-      LogInfo("Determined pixel format: bmdFormat12BitRGB");
-      pixel_format = bmdFormat12BitRGB;
-    }
-  }
-
-  if (pixel_format == bmdFormatUnspecified)
-  {
-    throw std::runtime_error("Unable to determine pixel format");
-  }
-
-  // How big is the image format?
-  const int32_t width = static_cast<int32_t>(
-      const_cast<IDeckLinkDisplayMode&>(new_display_mode).GetWidth());
-  const int32_t height = static_cast<int32_t>(
-      const_cast<IDeckLinkDisplayMode&>(new_display_mode).GetHeight());
-  LogInfo(
-      "New display mode is " + std::to_string(width) + " (width) x "
-      + std::to_string(height) + " (height)");
-
-  // What is the display mode (resolution + framerate)?
-  const BMDDisplayMode display_mode
-      = const_cast<IDeckLinkDisplayMode&>(new_display_mode).GetDisplayMode();
-
-  // Reset with new format
-  PauseStreams();
-  SetupConversionAndPublishingFrames(width, height);
-  RestartCapture(display_mode, pixel_format);
-
-  return S_OK;
-}
-
-HRESULT DeckLinkDevice::ScheduleNextFrame(IDeckLinkVideoFrame& video_frame)
+HRESULT
+DeckLinkOutputDevice::ScheduleNextFrame(IDeckLinkVideoFrame& video_frame)
 {
   LogVideoFrameAncillaryPackets(video_frame, "ScheduleNextFrame", true);
 
@@ -827,132 +961,7 @@ HRESULT DeckLinkDevice::ScheduleNextFrame(IDeckLinkVideoFrame& video_frame)
   return scheduled_result;
 }
 
-void DeckLinkDevice::LogVideoFrameAncillaryPackets(
-    const IDeckLinkVideoFrame& video_frame, const std::string& msg,
-    const bool log_debug)
-{
-  // Get ancillary packets
-  IDeckLinkVideoFrameAncillaryPackets* ancillary_packets_ptr = nullptr;
-  const auto get_ancillary_packets_result
-      = const_cast<IDeckLinkVideoFrame*>(&video_frame)->QueryInterface(
-          IID_IDeckLinkVideoFrameAncillaryPackets,
-          reinterpret_cast<void**>(&ancillary_packets_ptr));
-  DeckLinkVideoFrameAncillaryPacketsHandle ancillary_packets;
-  if (get_ancillary_packets_result == S_OK
-      && ancillary_packets_ptr != nullptr)
-  {
-    ancillary_packets
-        = DeckLinkVideoFrameAncillaryPacketsHandle(ancillary_packets_ptr);
-  }
-  else
-  {
-    throw std::runtime_error("Failed to retrieve ancillary packets");
-  }
-
-  // Get the packet iterator
-  IDeckLinkAncillaryPacketIterator* ancillary_packet_iterator_ptr = nullptr;
-  const auto get_ancillary_packet_iterator_result
-      = ancillary_packets->GetPacketIterator(&ancillary_packet_iterator_ptr);
-  DeckLinkAncillaryPacketIteratorHandle ancillary_packet_iterator;
-  if (get_ancillary_packet_iterator_result == S_OK
-      && ancillary_packet_iterator_ptr != nullptr)
-  {
-    ancillary_packet_iterator = DeckLinkAncillaryPacketIteratorHandle(
-        ancillary_packet_iterator_ptr);
-  }
-  else
-  {
-    throw std::runtime_error("Failed to retrieve ancillary packet iterator");
-  }
-
-  // Go through the packets
-  std::vector<DeckLinkAncillaryPacketHandle> received_packets;
-
-  while (true)
-  {
-    IDeckLinkAncillaryPacket* ancillary_packet_ptr = nullptr;
-    if (ancillary_packet_iterator->Next(&ancillary_packet_ptr) == S_OK)
-    {
-      received_packets.emplace_back(ancillary_packet_ptr);
-    }
-    else
-    {
-      break;
-    }
-  }
-
-  if (received_packets.size() > 0)
-  {
-    std::string log_string =
-        "[" + msg + "] Video frame contains "
-        + std::to_string(received_packets.size()) + " SDI ancillary packets:";
-
-    for (size_t idx = 0; idx < received_packets.size(); idx++)
-    {
-      const auto& packet = received_packets.at(idx);
-
-      const uint8_t* packet_data_ptr = nullptr;
-      uint32_t packet_data_size = 0u;
-      const auto get_bytes_result = packet->GetBytes(
-          bmdAncillaryPacketFormatUInt8,
-          reinterpret_cast<const void**>(&packet_data_ptr), &packet_data_size);
-
-      std::string data_str;
-      if (get_bytes_result == S_OK)
-      {
-        for (uint32_t data_idx = 0; data_idx < packet_data_size; data_idx++)
-        {
-          const uint8_t data_val = packet_data_ptr[data_idx];
-          if (data_idx > 0)
-          {
-            data_str += ", ";
-          }
-          data_str += std::to_string(static_cast<uint32_t>(data_val));
-        }
-      }
-      else
-      {
-        data_str = "non-uint8_t packet data";
-      }
-
-      log_string +=
-          "\nAncillary packet [" + std::to_string(idx) + "] has DID 0x"
-          + HexPrint(packet->GetDID()) + ", SDID 0x"
-          + HexPrint(packet->GetSDID()) + ", VANC line "
-          + std::to_string(packet->GetLineNumber()) + ", data stream index 0x"
-          + HexPrint(packet->GetDataStreamIndex()) + ", and data: [" + data_str
-          + "]";
-    }
-
-    if (log_debug) {
-      LogDebug(log_string);
-    } else {
-      LogInfo(log_string);
-    }
-  }
-}
-
-HRESULT DeckLinkDevice::FrameCallback(
-    const IDeckLinkVideoInputFrame& video_frame,
-    const IDeckLinkAudioInputPacket& audio_packet)
-{
-  (void)(audio_packet);
-  const auto convert_frame_result = input_video_converter_->ConvertFrame(
-      const_cast<IDeckLinkVideoInputFrame*>(&video_frame),
-      input_conversion_frame_.get());
-  if (convert_frame_result == S_OK)
-  {
-    converted_video_frame_callback_fn_(*input_conversion_frame_);
-    LogVideoFrameAncillaryPackets(video_frame, "FrameCallback", false);
-  }
-  else
-  {
-    throw std::runtime_error("Failed to convert video frame");
-  }
-  return S_OK;
-}
-
-HRESULT DeckLinkDevice::ScheduledFrameCallback(
+HRESULT DeckLinkOutputDevice::ScheduledFrameCallback(
     IDeckLinkVideoFrame& completed_frame,
     const BMDOutputFrameCompletionResult result)
 {
@@ -1063,7 +1072,73 @@ HRESULT DeckLinkDevice::ScheduledFrameCallback(
   return ScheduleNextFrame(*command_output_frame_);
 }
 
-std::vector<DeckLinkHandle> GetDeckLinkDevices()
+// Input+output device class
+DeckLinkInputOutputDevice::DeckLinkInputOutputDevice(
+    const LoggingFunction& logging_fn,
+    const VideoFrameSizeChangedCallbackFunction&
+        video_frame_size_changed_callback_fn,
+    const ConvertedVideoFrameCallbackFunction&
+        converted_video_frame_callback_fn,
+    const BMDDisplayMode output_mode, DeckLinkHandle device)
+{
+  InitializeBaseDevice(logging_fn, std::move(device));
+  InitializeInputDevice(
+      video_frame_size_changed_callback_fn, converted_video_frame_callback_fn);
+  InitializeOutputDevice(output_mode);
+}
+
+// Class-specific implementations of Start() and Stop() methods
+void DeckLinkInputDevice::Start()
+{
+  EnableVideoInput(kDefaultInputDisplayMode, kDefaultInputPixelFormat);
+  StartStreams();
+}
+
+void DeckLinkInputDevice::Stop()
+{
+  StopStreams();
+  DisableVideoInput();
+}
+
+void DeckLinkOutputDevice::Start()
+{
+  EnableVideoOutput();
+  PreScheduleReferenceFrame();
+  StartScheduledPlayback();
+  TallyOn();
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+}
+
+void DeckLinkOutputDevice::Stop()
+{
+  TallyOff();
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  StopScheduledPlayback();
+  DisableVideoOutput();
+}
+
+void DeckLinkInputOutputDevice::Start()
+{
+  EnableVideoInput(kDefaultInputDisplayMode, kDefaultInputPixelFormat);
+  EnableVideoOutput();
+  PreScheduleReferenceFrame();
+  StartStreams();
+  StartScheduledPlayback();
+  TallyOn();
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+}
+
+void DeckLinkInputOutputDevice::Stop()
+{
+  TallyOff();
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  StopStreams();
+  StopScheduledPlayback();
+  DisableVideoInput();
+  DisableVideoOutput();
+}
+
+std::vector<DeckLinkHandle> GetDeckLinkHardwareDevices()
 {
   // Find available DeckLink devices
   std::vector<DeckLinkHandle> decklink_devices;

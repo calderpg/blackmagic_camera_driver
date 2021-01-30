@@ -64,30 +64,31 @@ public:
     camera_pub_ = it_.advertise(camera_topic, 1, false);
 
     VideoFrameSizeChangedCallbackFunction video_frame_size_changed_callback_fn =
-        [&] (const int32_t image_width, const int32_t image_height,
-             const int32_t image_step)
+        [&] (const int64_t image_width, const int64_t image_height,
+             const int64_t image_step)
     {
       VideoFrameSizeChangedCallback(image_width, image_height, image_step);
     };
 
     ConvertedVideoFrameCallbackFunction converted_video_frame_callback_fn =
-        [&] (IDeckLinkVideoFrame& video_frame)
+        [&] (const InputConversionVideoFrame& video_frame)
     {
       ConvertedVideoFrameCallback(video_frame);
     };
 
     // Make the device
-    decklink_device_ = std::unique_ptr<DeckLinkDevice>(new DeckLinkDevice(
-        LoggingFunction(RosLoggingFunction),
-        video_frame_size_changed_callback_fn,
-        converted_video_frame_callback_fn,
-        bmdModeHD1080p30,
-        std::move(device)));
+    decklink_device_ = std::unique_ptr<DeckLinkInputOutputDevice>(
+        new DeckLinkInputOutputDevice(
+            LoggingFunction(RosLoggingFunction),
+            video_frame_size_changed_callback_fn,
+            converted_video_frame_callback_fn,
+            bmdModeHD1080p30,
+            std::move(device)));
   }
 
-  void StartVideoCapture() { decklink_device_->StartVideoCapture(); }
+  void Start() { decklink_device_->Start(); }
 
-  void StopVideoCapture() { decklink_device_->StopVideoCapture(); }
+  void Stop() { decklink_device_->Stop(); }
 
   void EnqueueCameraCommand(const BlackmagicSDICameraControlMessage& command)
   {
@@ -111,8 +112,8 @@ public:
 
 private:
   void VideoFrameSizeChangedCallback(
-      const int32_t image_width, const int32_t image_height,
-      const int32_t image_step)
+      const int64_t image_width, const int64_t image_height,
+      const int64_t image_step)
   {
     // Make the ROS image for publishing
     ros_image_.header.frame_id = camera_frame_;
@@ -125,21 +126,18 @@ private:
     ros_image_.data.resize(ros_image_.step * ros_image_.height, 0x00);
   }
 
-  void ConvertedVideoFrameCallback(IDeckLinkVideoFrame& video_frame)
+  void ConvertedVideoFrameCallback(
+      const InputConversionVideoFrame& video_frame)
   {
-    uint8_t* frame_buffer = nullptr;
-    const auto get_bytes_result
-        = video_frame.GetBytes(reinterpret_cast<void**>(&frame_buffer));
-    if (get_bytes_result == S_OK && frame_buffer != nullptr)
+    if (video_frame.DataSize() != static_cast<int64_t>(ros_image_.data.size()))
     {
-      ros_image_.header.stamp = ros::Time::now();
-      std::memcpy(ros_image_.data.data(), frame_buffer, ros_image_.data.size());
-      camera_pub_.publish(ros_image_);
+      throw std::runtime_error("Video frame and ROS image are different sizes");
     }
-    else
-    {
-      throw std::runtime_error("Failed to get frame bytes");
-    }
+
+    ros_image_.header.stamp = ros::Time::now();
+    std::memcpy(
+        ros_image_.data.data(), video_frame.Data(), ros_image_.data.size());
+    camera_pub_.publish(ros_image_);
   }
 
   ros::NodeHandle nh_;
@@ -148,7 +146,7 @@ private:
   std::string camera_frame_;
   sensor_msgs::Image ros_image_;
 
-  std::unique_ptr<DeckLinkDevice> decklink_device_;
+  std::unique_ptr<DeckLinkInputOutputDevice> decklink_device_;
 };
 
 int DoMain()
@@ -179,7 +177,7 @@ int DoMain()
   const uint8_t camera_id = static_cast<uint8_t>(camera_number);
 
   // Discover DeckLink devices
-  std::vector<DeckLinkHandle> decklink_devices = GetDeckLinkDevices();
+  std::vector<DeckLinkHandle> decklink_devices = GetDeckLinkHardwareDevices();
   if (decklink_devices.size() > 0)
   {
     ROS_INFO("Found [%zu] DeckLink device(s)", decklink_devices.size());
@@ -197,7 +195,7 @@ int DoMain()
 
   // Start capture
   ROS_INFO("Starting capture...");
-  capture_device.StartVideoCapture();
+  capture_device.Start();
 
   // const uint16_t set_focus = ConvertToFixed16(0.5);
   // ROS_INFO("mid focus command %hx", set_focus);
@@ -322,7 +320,7 @@ int DoMain()
 
   // Stop capture
   ROS_INFO("Stopping capture...");
-  capture_device.StopVideoCapture();
+  capture_device.Stop();
 
   // Let RAII clean everything else
   ROS_INFO("...capture complete");
