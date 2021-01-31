@@ -14,7 +14,7 @@ namespace blackmagic_camera_driver
 {
 namespace
 {
-inline ros::console::levels::Level ConvertLogLevels(const LogLevel level)
+ros::console::levels::Level ConvertLogLevels(const LogLevel level)
 {
   if (level == LogLevel::DEBUG)
   {
@@ -52,103 +52,6 @@ void RosLoggingFunction(
   }
 }
 
-class RosDeckLinkDeviceWrapper
-{
-public:
-  RosDeckLinkDeviceWrapper(
-      const ros::NodeHandle& nh, const std::string& camera_topic,
-      const std::string& camera_frame, DeckLinkHandle device)
-      : nh_(nh), it_(nh_), camera_frame_(camera_frame)
-  {
-    // Make the image publisher
-    camera_pub_ = it_.advertise(camera_topic, 1, false);
-
-    VideoFrameSizeChangedCallbackFunction video_frame_size_changed_callback_fn =
-        [&] (const int64_t image_width, const int64_t image_height,
-             const int64_t image_step)
-    {
-      VideoFrameSizeChangedCallback(image_width, image_height, image_step);
-    };
-
-    ConvertedVideoFrameCallbackFunction converted_video_frame_callback_fn =
-        [&] (const BMDCompatibleVideoFrame& video_frame)
-    {
-      ConvertedVideoFrameCallback(video_frame);
-    };
-
-    // Make the device
-    decklink_device_ = std::unique_ptr<DeckLinkInputOutputDevice>(
-        new DeckLinkInputOutputDevice(
-            LoggingFunction(RosLoggingFunction),
-            video_frame_size_changed_callback_fn,
-            converted_video_frame_callback_fn,
-            bmdModeHD1080p30,
-            std::move(device)));
-  }
-
-  void Start() { decklink_device_->Start(); }
-
-  void Stop() { decklink_device_->Stop(); }
-
-  void EnqueueCameraCommand(const BlackmagicSDICameraControlMessage& command)
-  {
-    decklink_device_->EnqueueCameraCommand(command);
-  }
-
-  void EnqueueOutputFrame(BMDHandle<BMDCompatibleVideoFrame> output_frame)
-  {
-    decklink_device_->EnqueueOutputFrame(std::move(output_frame));
-  }
-
-  void ClearOutputQueueAndResetOutputToReferenceFrame()
-  {
-    decklink_device_->ClearOutputQueueAndResetOutputToReferenceFrame();
-  }
-
-  BMDHandle<BMDCompatibleVideoFrame> CreateBGRA8OutputVideoFrame()
-  {
-    return decklink_device_->CreateBGRA8OutputVideoFrame();
-  }
-
-private:
-  void VideoFrameSizeChangedCallback(
-      const int64_t image_width, const int64_t image_height,
-      const int64_t image_step)
-  {
-    // Make the ROS image for publishing
-    ros_image_.header.frame_id = camera_frame_;
-    ros_image_.width = static_cast<uint32_t>(image_width);
-    ros_image_.height = static_cast<uint32_t>(image_height);
-    ros_image_.encoding = "bgra8";
-    ros_image_.is_bigendian = false;
-    ros_image_.step = static_cast<uint32_t>(image_step);
-    ros_image_.data.clear();
-    ros_image_.data.resize(ros_image_.step * ros_image_.height, 0x00);
-  }
-
-  void ConvertedVideoFrameCallback(
-      const BMDCompatibleVideoFrame& video_frame)
-  {
-    if (video_frame.DataSize() != static_cast<int64_t>(ros_image_.data.size()))
-    {
-      throw std::runtime_error("Video frame and ROS image are different sizes");
-    }
-
-    ros_image_.header.stamp = ros::Time::now();
-    std::memcpy(
-        ros_image_.data.data(), video_frame.Data(), ros_image_.data.size());
-    camera_pub_.publish(ros_image_);
-  }
-
-  ros::NodeHandle nh_;
-  image_transport::ImageTransport it_;
-  image_transport::Publisher camera_pub_;
-  std::string camera_frame_;
-  sensor_msgs::Image ros_image_;
-
-  std::unique_ptr<DeckLinkInputOutputDevice> decklink_device_;
-};
-
 int DoMain()
 {
   // Get node handles
@@ -176,6 +79,9 @@ int DoMain()
 
   const uint8_t camera_id = static_cast<uint8_t>(camera_number);
 
+  // Output display mode, 1920x1080 pixels @ 30 frames/sec
+  const BMDDisplayMode output_mode = bmdModeHD1080p30;
+
   // Discover DeckLink devices
   std::vector<DeckLinkHandle> decklink_devices = GetDeckLinkHardwareDevices();
   if (decklink_devices.size() > 0)
@@ -187,10 +93,43 @@ int DoMain()
     throw std::runtime_error("No DeckLink device(s) found");
   }
 
+  // Setup ROS interface
+  image_transport::ImageTransport it(nh);
+  image_transport::Publisher camera_pub = it.advertise(camera_topic, 1, false);
+  sensor_msgs::Image ros_image;
+
+  // Create callback functions
+  const auto frame_size_change_fn = [&](
+      const int64_t width, const int64_t height, const int64_t step)
+  {
+    // Resize the ROS image for publishing
+    ros_image.header.frame_id = camera_frame;
+    ros_image.width = static_cast<uint32_t>(width);
+    ros_image.height = static_cast<uint32_t>(height);
+    ros_image.encoding = "bgra8";
+    ros_image.is_bigendian = false;
+    ros_image.step = static_cast<uint32_t>(step);
+    ros_image.data.clear();
+    ros_image.data.resize(ros_image.step * ros_image.height, 0x00);
+  };
+
+  const auto frame_received_fn = [&](const BMDCompatibleVideoFrame& video_frame)
+  {
+    if (video_frame.DataSize() != static_cast<int64_t>(ros_image.data.size()))
+    {
+      throw std::runtime_error("Video frame and ROS image are different sizes");
+    }
+
+    ros_image.header.stamp = ros::Time::now();
+    std::memcpy(
+        ros_image.data.data(), video_frame.Data(), ros_image.data.size());
+    camera_pub.publish(ros_image);
+  };
+
   // Get the selected device
   ROS_INFO("Selecting DeckLink device [%d]", decklink_device_index);
-  RosDeckLinkDeviceWrapper capture_device(
-      nh, camera_topic, camera_frame,
+  DeckLinkInputOutputDevice capture_device(
+      RosLoggingFunction, frame_size_change_fn, frame_received_fn, output_mode,
       std::move(decklink_devices.at(decklink_device_index)));
 
   // Start capture
