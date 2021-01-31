@@ -51,7 +51,7 @@ inline int16_t ConvertToFixed16(const float val)
   return static_cast<int16_t>(multiplied);
 }
 
-inline int32_t Calc10BitYUVRowBytes(const int32_t frame_width)
+inline int64_t Calc10BitYUVRowBytes(const int64_t frame_width)
 {
   return ((frame_width + 47) / 48) * 128;
 }
@@ -84,42 +84,17 @@ using LoggingFunction =
 using VideoFrameSizeChangedCallbackFunction =
     std::function<void(const int64_t, const int64_t, const int64_t)>;
 
-// Implementation of IDeckLinkVideoFrame for input frame conversion, since
-// only output devices can create frames.
-class InputConversionVideoFrame : public IDeckLinkVideoFrame
+// Implementation of IDeckLinkVideoFrame that presents a more useful API.
+class BMDCompatibleVideoFrame : public IDeckLinkVideoFrame
 {
 public:
-  InputConversionVideoFrame(
+  static BMDHandle<BMDCompatibleVideoFrame> Make(
       const int64_t width, const int64_t height, const int64_t row_bytes,
       const BMDPixelFormat pixel_format, const BMDFrameFlags frame_flags)
-      : width_(width), height_(height), row_bytes_(row_bytes),
-        pixel_format_(pixel_format), frame_flags_(frame_flags)
   {
-    if (width_ <= 0)
-    {
-      throw std::invalid_argument("width_ <= 0");
-    }
-    if (height_ <= 0)
-    {
-      throw std::invalid_argument("height_ <= 0");
-    }
-    if (row_bytes_ < width_)
-    {
-      throw std::invalid_argument("row_bytes_ <= width_");
-    }
-
-    frame_data_ =
-        reinterpret_cast<uint8_t*>(aligned_alloc(16, row_bytes_ * height_));
-    if (frame_data_ == nullptr)
-    {
-      throw std::runtime_error("Failed to allocate frame data");
-    }
-  }
-
-  ~InputConversionVideoFrame() override
-  {
-    free(frame_data_);
-    frame_data_ = nullptr;
+    return BMDHandle<BMDCompatibleVideoFrame>(
+        new BMDCompatibleVideoFrame(
+            width, height, row_bytes, pixel_format, frame_flags));
   }
 
   uint8_t* Data() const { return frame_data_; }
@@ -132,7 +107,12 @@ public:
 
   int64_t Step() const { return row_bytes_; }
 
-  // Implement the IDeckLinkVideoFrame interface
+  BMDPixelFormat PixelFormat() const { return pixel_format_; }
+
+  BMDFrameFlags Flags() const { return frame_flags_; }
+
+  // Implement the IDeckLinkVideoFrame interface. Prefer using the above methods
+  // to access.
   long GetWidth() override { return width_; }
 
   long GetHeight() override { return height_; }
@@ -184,6 +164,42 @@ public:
   }
 
 private:
+  // Private constructor to force heap allocation via Make() to properly support
+  // BMD's refcount system.
+  BMDCompatibleVideoFrame(
+      const int64_t width, const int64_t height, const int64_t row_bytes,
+      const BMDPixelFormat pixel_format, const BMDFrameFlags frame_flags)
+      : width_(width), height_(height), row_bytes_(row_bytes),
+        pixel_format_(pixel_format), frame_flags_(frame_flags)
+  {
+    if (width_ <= 0)
+    {
+      throw std::invalid_argument("width_ <= 0");
+    }
+    if (height_ <= 0)
+    {
+      throw std::invalid_argument("height_ <= 0");
+    }
+    if (row_bytes_ < width_)
+    {
+      throw std::invalid_argument("row_bytes_ <= width_");
+    }
+
+    frame_data_ =
+        reinterpret_cast<uint8_t*>(aligned_alloc(16, row_bytes_ * height_));
+    if (frame_data_ == nullptr)
+    {
+      throw std::runtime_error("Failed to allocate frame data");
+    }
+  }
+
+  // Private destructor to force destruction through BMD's refcount system.
+  ~BMDCompatibleVideoFrame() override
+  {
+    free(frame_data_);
+    frame_data_ = nullptr;
+  }
+
   int64_t width_ = 0;
   int64_t height_ = 0;
   int64_t row_bytes_ = 0;
@@ -196,7 +212,7 @@ private:
 };
 
 using ConvertedVideoFrameCallbackFunction =
-    std::function<void(const InputConversionVideoFrame& video_frame)>;
+    std::function<void(const BMDCompatibleVideoFrame& video_frame)>;
 
 // Forward declarations
 class DeckLinkInputDevice;
@@ -206,13 +222,10 @@ class DeckLinkOutputDevice;
 class FrameReceivedCallback : public IDeckLinkInputCallback
 {
 public:
-  FrameReceivedCallback(DeckLinkInputDevice* parent_device)
-      : parent_device_(parent_device)
+  static DeckLinkInputCallbackHandle Make(DeckLinkInputDevice* parent_device)
   {
-    if (parent_device_ == nullptr)
-    {
-      throw std::runtime_error("parent_device_ cannot be null");
-    }
+    return DeckLinkInputCallbackHandle(
+        new FrameReceivedCallback(parent_device));
   }
 
   HRESULT VideoInputFormatChanged(
@@ -249,6 +262,20 @@ public:
   }
 
 private:
+  // Private constructor to force heap allocation via Make() to properly support
+  // BMD's refcount system.
+  FrameReceivedCallback(DeckLinkInputDevice* parent_device)
+      : parent_device_(parent_device)
+  {
+    if (parent_device_ == nullptr)
+    {
+      throw std::runtime_error("parent_device_ cannot be null");
+    }
+  }
+
+  // Private destructor to force destruction through BMD's refcount system.
+  ~FrameReceivedCallback() = default;
+
   DeckLinkInputDevice* parent_device_ = nullptr;
   std::atomic<uint64_t> refcount_{1};
 };
@@ -256,13 +283,9 @@ private:
 class FrameOutputCallback : public IDeckLinkVideoOutputCallback
 {
 public:
-  FrameOutputCallback(DeckLinkOutputDevice* parent_device)
-      : parent_device_(parent_device)
+  static DeckLinkOutputCallbackHandle Make(DeckLinkOutputDevice* parent_device)
   {
-    if (parent_device_ == nullptr)
-    {
-      throw std::runtime_error("parent_device_ cannot be null");
-    }
+    return DeckLinkOutputCallbackHandle(new FrameOutputCallback(parent_device));
   }
 
   HRESULT ScheduledFrameCompleted(
@@ -296,6 +319,20 @@ public:
   }
 
 private:
+  // Private constructor to force heap allocation via Make() to properly support
+  // BMD's refcount system.
+  FrameOutputCallback(DeckLinkOutputDevice* parent_device)
+      : parent_device_(parent_device)
+  {
+    if (parent_device_ == nullptr)
+    {
+      throw std::runtime_error("parent_device_ cannot be null");
+    }
+  }
+
+  // Private destructor to force destruction through BMD's refcount system.
+  ~FrameOutputCallback() = default;
+
   DeckLinkOutputDevice* parent_device_ = nullptr;
   std::atomic<uint64_t> refcount_{1};
 };
@@ -513,6 +550,12 @@ private:
 class BlackmagicSDICameraControlPacket : public IDeckLinkAncillaryPacket
 {
 public:
+  static BMDHandle<BlackmagicSDICameraControlPacket> Make()
+  {
+    return BMDHandle<BlackmagicSDICameraControlPacket>(
+        new BlackmagicSDICameraControlPacket());
+  }
+
   bool AddCameraControlMessage(const BlackmagicSDICameraControlMessage& msg)
   {
     const auto& message_bytes = msg.GetBytes();
@@ -583,6 +626,13 @@ public:
   }
 
 private:
+  // Private constructor to force heap allocation via Make() to properly support
+  // BMD's refcount system.
+  BlackmagicSDICameraControlPacket() {}
+
+  // Private destructor to force destruction through BMD's refcount system.
+  ~BlackmagicSDICameraControlPacket() = default;
+
   std::vector<uint8_t> bytes_;
   // These are specified in the Blackmagic SDI Camera Control Protocol.
   const uint8_t did_ = 0x51;
@@ -596,13 +646,10 @@ private:
 class BlackmagicSDITallyControlPacket : public IDeckLinkAncillaryPacket
 {
 public:
-  BlackmagicSDITallyControlPacket(const bool tally_on)
+  static DeckLinkAncillaryPacketHandle Make(const bool tally_on)
   {
-    const uint8_t tally_header = 0b00000011;
-    const uint8_t tally_command = (tally_on) ? 0b00110011 : 0b00000000;
-    const std::vector<uint8_t> device_tally(50, tally_command);
-    bytes_ = {tally_header};
-    bytes_.insert(bytes_.end(), device_tally.begin(), device_tally.end());
+    return DeckLinkAncillaryPacketHandle(
+        new BlackmagicSDITallyControlPacket(tally_on));
   }
 
   HRESULT GetBytes(
@@ -660,6 +707,20 @@ public:
   }
 
 private:
+  // Private constructor to force heap allocation via Make() to properly support
+  // BMD's refcount system.
+  BlackmagicSDITallyControlPacket(const bool tally_on)
+  {
+    const uint8_t tally_header = 0b00000011;
+    const uint8_t tally_command = (tally_on) ? 0b00110011 : 0b00000000;
+    const std::vector<uint8_t> device_tally(50, tally_command);
+    bytes_ = {tally_header};
+    bytes_.insert(bytes_.end(), device_tally.begin(), device_tally.end());
+  }
+
+  // Private destructor to force destruction through BMD's refcount system.
+  ~BlackmagicSDITallyControlPacket() = default;
+
   std::vector<uint8_t> bytes_;
   // These are specified in the Blackmagic SDI Tally Control Protocol.
   const uint8_t did_ = 0x51;
@@ -796,7 +857,7 @@ private:
 
   DeckLinkInputHandle input_device_;
   DeckLinkInputCallbackHandle input_callback_;
-  std::unique_ptr<InputConversionVideoFrame> input_conversion_frame_;
+  BMDHandle<BMDCompatibleVideoFrame> input_conversion_frame_;
 };
 
 class DeckLinkOutputDevice : public virtual DeckLinkBaseDevice
@@ -814,11 +875,11 @@ public:
 
   void ClearOutputQueueAndResetOutputToReferenceFrame();
 
-  void EnqueueOutputFrame(DeckLinkMutableVideoFrameHandle output_frame);
+  void EnqueueOutputFrame(BMDHandle<BMDCompatibleVideoFrame> output_frame);
 
-  DeckLinkMutableVideoFrameHandle CreateBGRA8OutputVideoFrame();
+  BMDHandle<BMDCompatibleVideoFrame> CreateBGRA8OutputVideoFrame();
 
-  DeckLinkMutableVideoFrameHandle CreateYUV10OutputVideoFrame();
+  BMDHandle<BMDCompatibleVideoFrame> CreateYUV10OutputVideoFrame();
 
 protected:
   DeckLinkOutputDevice() {}
@@ -863,7 +924,7 @@ private:
   BMDDisplayMode output_display_mode_ = bmdModeHD1080p30;
 
   std::mutex output_frame_queue_lock_;
-  std::list<DeckLinkMutableVideoFrameHandle> output_frame_queue_;
+  std::list<BMDHandle<BMDCompatibleVideoFrame>> output_frame_queue_;
 
   DeckLinkOutputHandle output_device_;
   DeckLinkOutputCallbackHandle output_callback_;

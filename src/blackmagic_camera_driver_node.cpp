@@ -71,7 +71,7 @@ public:
     };
 
     ConvertedVideoFrameCallbackFunction converted_video_frame_callback_fn =
-        [&] (const InputConversionVideoFrame& video_frame)
+        [&] (const BMDCompatibleVideoFrame& video_frame)
     {
       ConvertedVideoFrameCallback(video_frame);
     };
@@ -95,7 +95,7 @@ public:
     decklink_device_->EnqueueCameraCommand(command);
   }
 
-  void EnqueueOutputFrame(DeckLinkMutableVideoFrameHandle output_frame)
+  void EnqueueOutputFrame(BMDHandle<BMDCompatibleVideoFrame> output_frame)
   {
     decklink_device_->EnqueueOutputFrame(std::move(output_frame));
   }
@@ -105,7 +105,7 @@ public:
     decklink_device_->ClearOutputQueueAndResetOutputToReferenceFrame();
   }
 
-  DeckLinkMutableVideoFrameHandle CreateBGRA8OutputVideoFrame()
+  BMDHandle<BMDCompatibleVideoFrame> CreateBGRA8OutputVideoFrame()
   {
     return decklink_device_->CreateBGRA8OutputVideoFrame();
   }
@@ -127,7 +127,7 @@ private:
   }
 
   void ConvertedVideoFrameCallback(
-      const InputConversionVideoFrame& video_frame)
+      const BMDCompatibleVideoFrame& video_frame)
   {
     if (video_frame.DataSize() != static_cast<int64_t>(ros_image_.data.size()))
     {
@@ -286,22 +286,13 @@ int DoMain()
     if (image_data_ptr != nullptr)
     {
       auto output_frame = capture_device.CreateBGRA8OutputVideoFrame();
-      uint8_t* output_frame_buffer = nullptr;
-      const auto get_output_bytes_result = output_frame->GetBytes(
-          reinterpret_cast<void**>(&output_frame_buffer));
-      if (get_output_bytes_result != S_OK || output_frame_buffer == nullptr)
-      {
-        throw std::runtime_error("Failed to get output frame bytes");
-      }
-      const size_t output_frame_bytes
-          = output_frame->GetRowBytes() * output_frame->GetHeight();
-      if (output_frame_bytes != num_image_bytes)
+      if (output_frame->DataSize() != static_cast<int64_t>(num_image_bytes))
       {
         throw std::runtime_error(
             "Image data and frame data are different sizes");
       }
 
-      std::memcpy(output_frame_buffer, image_data_ptr, num_image_bytes);
+      std::memcpy(output_frame->Data(), image_data_ptr, num_image_bytes);
 
       capture_device.EnqueueOutputFrame(std::move(output_frame));
     }

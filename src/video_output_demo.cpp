@@ -77,22 +77,13 @@ int DoMain(const int32_t decklink_device_index)
     if (image_data_ptr != nullptr)
     {
       auto output_frame = output_device.CreateBGRA8OutputVideoFrame();
-      uint8_t* output_frame_buffer = nullptr;
-      const auto get_output_bytes_result = output_frame->GetBytes(
-          reinterpret_cast<void**>(&output_frame_buffer));
-      if (get_output_bytes_result != S_OK || output_frame_buffer == nullptr)
-      {
-        throw std::runtime_error("Failed to get output frame bytes");
-      }
-      const size_t output_frame_bytes
-          = output_frame->GetRowBytes() * output_frame->GetHeight();
-      if (output_frame_bytes != num_image_bytes)
+      if (output_frame->DataSize() != static_cast<int64_t>(num_image_bytes))
       {
         throw std::runtime_error(
             "Image data and frame data are different sizes");
       }
 
-      std::memcpy(output_frame_buffer, image_data_ptr, num_image_bytes);
+      std::memcpy(output_frame->Data(), image_data_ptr, num_image_bytes);
 
       output_device.EnqueueOutputFrame(std::move(output_frame));
     }
