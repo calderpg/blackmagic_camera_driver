@@ -33,7 +33,7 @@ add_library(decklink
             decklink_sdk/DeckLinkAPI.h
             decklink_sdk/DeckLinkAPIModes.h
             decklink_sdk/DeckLinkAPITypes.h
-            #decklink_sdk/DeckLinkAPI_v10_11.h
+            decklink_sdk/DeckLinkAPI_v10_11.h
             #decklink_sdk/DeckLinkAPI_v10_2.h
             #decklink_sdk/DeckLinkAPI_v10_4.h
             #decklink_sdk/DeckLinkAPI_v10_5.h
@@ -58,6 +58,7 @@ add_library(decklink
             decklink_sdk/DeckLinkAPIVideoOutput_v11_4.h
             decklink_sdk/LinuxCOM.h)
 set_target_properties(decklink PROPERTIES COMPILE_FLAGS "-Wno-multichar")
+target_link_libraries(decklink ${CMAKE_DL_LIBS})
 
 include_directories(include SYSTEM decklink_sdk
                             ${catkin_INCLUDE_DIRS}
@@ -88,26 +89,36 @@ add_library(${PROJECT_NAME}
             include/${PROJECT_NAME}/bmd_handle.hpp
             include/${PROJECT_NAME}/decklink_interface.hpp
             src/${PROJECT_NAME}/decklink_interface.cpp)
-add_dependencies(${PROJECT_NAME} ${catkin_EXPORTED_TARGETS})
-target_link_libraries(${PROJECT_NAME} decklink ${CMAKE_DL_LIBS})
+target_link_libraries(${PROJECT_NAME} decklink)
 
+# ROS node controlling a BlackMagic camera
 add_executable(blackmagic_camera_driver_node
                src/blackmagic_camera_driver_node.cpp)
 add_dependencies(blackmagic_camera_driver_node ${catkin_EXPORTED_TARGETS})
 target_link_libraries(blackmagic_camera_driver_node
                       ${PROJECT_NAME} ${catkin_LIBRARIES})
 
-add_executable(video_input_demo src/video_input_demo.cpp)
-add_dependencies(video_input_demo ${catkin_EXPORTED_TARGETS})
-target_link_libraries(video_input_demo ${PROJECT_NAME} ${catkin_LIBRARIES})
+# ROS node for video input
+add_executable(video_input_node src/video_input_node.cpp)
+add_dependencies(video_input_node ${catkin_EXPORTED_TARGETS})
+target_link_libraries(video_input_node ${PROJECT_NAME} ${catkin_LIBRARIES})
 
+# ROS node for video output
+add_executable(video_output_node src/video_output_node.cpp)
+add_dependencies(video_output_node ${catkin_EXPORTED_TARGETS})
+target_link_libraries(video_output_node ${PROJECT_NAME} ${catkin_LIBRARIES})
+
+# Basic demo of video input (ROS-free)
+add_executable(video_input_demo src/video_input_demo.cpp)
+target_link_libraries(video_input_demo ${PROJECT_NAME})
+
+# Basic demo of video output (ROS-free)
 add_executable(video_output_demo src/video_output_demo.cpp)
-add_dependencies(video_output_demo ${catkin_EXPORTED_TARGETS})
-target_link_libraries(video_output_demo ${PROJECT_NAME} ${catkin_LIBRARIES})
+target_link_libraries(video_output_demo ${PROJECT_NAME})
 
 install(TARGETS
-    decklink ${PROJECT_NAME} blackmagic_camera_driver_node video_input_demo
-    video_output_demo
+    decklink ${PROJECT_NAME} blackmagic_camera_driver_node video_input_node
+    video_output_node video_input_demo video_output_demo
     ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
     LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
     RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
