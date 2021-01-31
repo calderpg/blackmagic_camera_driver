@@ -43,7 +43,7 @@ int DoMain(const int32_t decklink_device_index)
               << height << " (height) " << step << " (bytes/row)" << std::endl;
   };
 
-  const auto frame_received_fn = [](const InputConversionVideoFrame&)
+  const auto frame_received_fn = [](const BMDCompatibleVideoFrame&)
   {
     std::cout << "Video frame received" << std::endl;
   };
