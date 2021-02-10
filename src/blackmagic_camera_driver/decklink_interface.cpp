@@ -167,17 +167,22 @@ void DeckLinkBaseDevice::InitializeBaseDevice(
   logging_fn_ = logging_fn;
   device_ = std::move(device);
 
+  // Get the name of the device
+  const char* display_name = nullptr;
+  const auto get_display_name_result = device_->GetDisplayName(&display_name);
+  if (get_display_name_result != S_OK || display_name == nullptr)
+  {
+    throw std::runtime_error("Failed to get device display name");
+  }
+  LogInfo("Connecting to device [" + std::string(display_name) + "]");
+  free(const_cast<char*>(display_name));
+  display_name = nullptr;
+
   // Get the attributes interface
-  IDeckLinkProfileAttributes* attributes_interface_ptr = nullptr;
   const auto get_attributes_result = device_->QueryInterface(
       IID_IDeckLinkProfileAttributes,
-      reinterpret_cast<void**>(&attributes_interface_ptr));
-  if (get_attributes_result == S_OK)
-  {
-    attributes_interface_
-        = DeckLinkProfileAttributesHandle(attributes_interface_ptr);
-  }
-  else
+      reinterpret_cast<void**>(&attributes_interface_));
+  if (get_attributes_result != S_OK || attributes_interface_ == nullptr)
   {
     throw std::runtime_error("Failed to get attributes interface");
   }
@@ -343,14 +348,9 @@ void DeckLinkInputDevice::InitializeInputDevice(
   }
 
   // Get the input interface
-  IDeckLinkInput* input_device_ptr = nullptr;
   const auto get_input_result = GetDevice().QueryInterface(
-      IID_IDeckLinkInput, reinterpret_cast<void**>(&input_device_ptr));
-  if (get_input_result == S_OK)
-  {
-    input_device_ = DeckLinkInputHandle(input_device_ptr);
-  }
-  else
+      IID_IDeckLinkInput, reinterpret_cast<void**>(&input_device_));
+  if (get_input_result != S_OK || input_device_ == nullptr)
   {
     throw std::runtime_error("Failed to get input interface");
   }
@@ -393,11 +393,9 @@ void DeckLinkInputDevice::EnableVideoInput(
 
 void DeckLinkInputDevice::DisableVideoInput()
 {
-  const auto result = input_device_->DisableVideoInput();
-  if (result != S_OK)
-  {
-    throw std::runtime_error("Failed to disable video input");
-  }
+  // Since this gets called at shutdown, no reason to error check. Nothing we
+  // can do to handle errors at this point.
+  input_device_->DisableVideoInput();
 }
 
 void DeckLinkInputDevice::StartStreams()
@@ -429,11 +427,9 @@ void DeckLinkInputDevice::PauseStreams()
 
 void DeckLinkInputDevice::StopStreams()
 {
-  const auto result = input_device_->StopStreams();
-  if (result != S_OK)
-  {
-    throw std::runtime_error("Failed to stop streams");
-  }
+  // No error checking here, since the only non-S_OK return comes in the case
+  // streams are already stopped.
+  input_device_->StopStreams();
 }
 
 void DeckLinkInputDevice::SetupConversionAndPublishingFrames(
@@ -522,7 +518,6 @@ HRESULT DeckLinkInputDevice::InputFormatChangedCallback(
     throw std::runtime_error(
         "Detected bit-depth must be EITHER 8 OR 10 OR 12 bits");
   }
-
 
   BMDPixelFormat pixel_format = bmdFormatUnspecified;
   if (is_ycrcb422)
@@ -622,14 +617,9 @@ void DeckLinkOutputDevice::InitializeOutputDevice(
   output_display_mode_ = output_mode;
 
   // Get the output interface
-  IDeckLinkOutput* output_device_ptr = nullptr;
   const auto get_output_result = GetDevice().QueryInterface(
-      IID_IDeckLinkOutput, reinterpret_cast<void**>(&output_device_ptr));
-  if (get_output_result == S_OK)
-  {
-    output_device_ = DeckLinkOutputHandle(output_device_ptr);
-  }
-  else
+      IID_IDeckLinkOutput, reinterpret_cast<void**>(&output_device_));
+  if (get_output_result != S_OK || output_device_ == nullptr)
   {
     throw std::runtime_error("Failed to get output interface");
   }
@@ -878,11 +868,9 @@ void DeckLinkOutputDevice::EnableVideoOutput()
 
 void DeckLinkOutputDevice::DisableVideoOutput()
 {
-  const auto result = output_device_->DisableVideoOutput();
-  if (result != S_OK)
-  {
-    throw std::runtime_error("Failed to disable video output");
-  }
+  // Since this gets called at shutdown, no reason to error check. Nothing we
+  // can do to handle errors at this point.
+  output_device_->DisableVideoOutput();
 }
 
 void DeckLinkOutputDevice::StartScheduledPlayback()
@@ -897,10 +885,23 @@ void DeckLinkOutputDevice::StartScheduledPlayback()
 
 void DeckLinkOutputDevice::StopScheduledPlayback()
 {
-  const auto result = output_device_->StopScheduledPlayback(0, nullptr, 0);
-  if (result != S_OK)
+  bool scheduled_playback_running = false;
+  const auto playback_running_result =
+      output_device_->IsScheduledPlaybackRunning(&scheduled_playback_running);
+  if (playback_running_result != S_OK)
   {
-    throw std::runtime_error("Failed to stop scheduled playback");
+    throw std::runtime_error(
+        "Failed to check if scheduled playback is running");
+  }
+
+  if (scheduled_playback_running)
+  {
+    const auto playback_stopped_result =
+        output_device_->StopScheduledPlayback(0, nullptr, 0);
+    if (playback_stopped_result != S_OK)
+    {
+      throw std::runtime_error("Failed to stop scheduled playback");
+    }
   }
 }
 

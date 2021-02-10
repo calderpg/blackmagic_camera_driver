@@ -737,7 +737,7 @@ public:
   DeckLinkBaseDevice(
       const LoggingFunction& logging_fn, DeckLinkHandle device);
 
-  virtual ~DeckLinkBaseDevice() {}
+  virtual ~DeckLinkBaseDevice() { LogInfo("~DeckLinkBaseDevice()"); }
 
   virtual void Start() = 0;
 
@@ -793,7 +793,7 @@ private:
   LoggingFunction logging_fn_;
 
   DeckLinkHandle device_;
-  DeckLinkProfileAttributesHandle attributes_interface_;
+  IDeckLinkProfileAttributes* attributes_interface_ = nullptr;
   DeckLinkVideoConversionHandle video_converter_;
 };
 
@@ -807,6 +807,12 @@ public:
       const ConvertedVideoFrameCallbackFunction&
           converted_video_frame_callback_fn,
       DeckLinkHandle device);
+
+  ~DeckLinkInputDevice() override
+  {
+    LogInfo("~DeckLinkInputDevice()");
+    Stop();
+  }
 
   void Start() override;
 
@@ -855,7 +861,7 @@ private:
   VideoFrameSizeChangedCallbackFunction video_frame_size_changed_callback_fn_;
   ConvertedVideoFrameCallbackFunction converted_video_frame_callback_fn_;
 
-  DeckLinkInputHandle input_device_;
+  IDeckLinkInput* input_device_ = nullptr;
   DeckLinkInputCallbackHandle input_callback_;
   BMDHandle<BMDCompatibleVideoFrame> input_conversion_frame_;
 };
@@ -866,6 +872,12 @@ public:
   DeckLinkOutputDevice(
       const LoggingFunction& logging_fn, const BMDDisplayMode output_mode,
       DeckLinkHandle device);
+
+  ~DeckLinkOutputDevice() override
+  {
+    LogInfo("~DeckLinkOutputDevice()");
+    Stop();
+  }
 
   void Start() override;
 
@@ -926,7 +938,7 @@ private:
   std::mutex output_frame_queue_lock_;
   std::list<BMDHandle<BMDCompatibleVideoFrame>> output_frame_queue_;
 
-  DeckLinkOutputHandle output_device_;
+  IDeckLinkOutput* output_device_ = nullptr;
   DeckLinkOutputCallbackHandle output_callback_;
   DeckLinkMutableVideoFrameHandle reference_output_frame_;
   DeckLinkMutableVideoFrameHandle active_output_frame_;
@@ -944,6 +956,12 @@ public:
       const ConvertedVideoFrameCallbackFunction&
           converted_video_frame_callback_fn,
       const BMDDisplayMode output_mode, DeckLinkHandle device);
+
+  ~DeckLinkInputOutputDevice() override
+  {
+    LogInfo("~DeckLinkInputOutputDevice()");
+    Stop();
+  }
 
   void Start() override;
 
