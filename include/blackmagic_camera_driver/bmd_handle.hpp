@@ -100,8 +100,11 @@ public:
 
   BMDHandle<BMDType>& operator=(BMDHandle<BMDType>&& other)
   {
-    reset(nullptr);
-    bmd_item_ = other.release();
+    if (this != std::addressof(other))
+    {
+      reset(nullptr);
+      bmd_item_ = other.release();
+    }
     return *this;
   }
 
